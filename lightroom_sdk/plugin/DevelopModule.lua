@@ -174,6 +174,13 @@ local LENS_BLUR_SETTINGS = {
     "LensBlurFocalRange"      -- Depth range control
 }
 
+-- A photo is developable in Lightroom if it is any still image -- raw, DNG, JPEG,
+-- TIFF, PNG, HEIC, PSD, etc. Only video is excluded (Lightroom applies Develop
+-- adjustments to rendered formats too, not just raw/DNG). Exposed for unit tests.
+function DevelopModule._isDevelopableFormat(fileFormat)
+    return fileFormat ~= nil and fileFormat ~= "VIDEO"
+end
+
 -- Get current develop settings with lightweight error handling
 function DevelopModule.getSettings(params, callback)
     ensureLrModules()
@@ -227,10 +234,9 @@ function DevelopModule.getSettings(params, callback)
             isVirtualCopy = photo:getRawMetadata("isVirtualCopy")
         end)
         
-        if not metadataSuccess or not fileFormat or 
-           (fileFormat ~= "RAW" and fileFormat ~= "DNG" and not isVirtualCopy) then
-            wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.INVALID_PHOTO_TYPE, 
-                "Photo cannot be developed (not a raw file or virtual copy)"))
+        if not metadataSuccess or not DevelopModule._isDevelopableFormat(fileFormat) then
+            wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.INVALID_PHOTO_TYPE,
+                "Photo cannot be developed (video files are not developable)"))
             return
         end
         
@@ -364,10 +370,9 @@ function DevelopModule.applySettings(params, callback)
             isVirtualCopy = photo:getRawMetadata("isVirtualCopy")
         end)
         
-        if not metadataSuccess or not fileFormat or 
-           (fileFormat ~= "RAW" and fileFormat ~= "DNG" and not isVirtualCopy) then
-            wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.INVALID_PHOTO_TYPE, 
-                "Photo cannot be developed (not a raw file or virtual copy)"))
+        if not metadataSuccess or not DevelopModule._isDevelopableFormat(fileFormat) then
+            wrappedCallback(ErrorUtils.createError(ErrorUtils.CODES.INVALID_PHOTO_TYPE,
+                "Photo cannot be developed (video files are not developable)"))
             return
         end
         

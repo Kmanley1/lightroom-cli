@@ -145,3 +145,27 @@ class TestSocketBridgeShutdownReset:
         _load(rt, "SimpleSocketBridge")
         rt.execute("pcall(require('SimpleSocketBridge').start)")
         assert rt.eval("_G.LightroomPythonBridge.shuttingDown") is True
+
+
+class TestDevelopModuleDevelopableFormat:
+    """Develop read-guard fix: getSettings must accept any still image, not just RAW/DNG/VC.
+
+    Lightroom develops JPEG/TIFF/PNG/etc., but DevelopModule.getSettings used to reject
+    everything except RAW/DNG/virtual-copy, so `lr develop get-settings` failed on a JPEG
+    even though the photo had real adjustments. The guard now delegates to a pure predicate.
+    """
+
+    @pytest.fixture
+    def develop(self):
+        rt = _make_runtime()
+        return _load(rt, "DevelopModule")
+
+    @pytest.mark.parametrize("fmt", ["RAW", "DNG", "JPG", "JPEG", "TIFF", "PNG", "HEIC", "PSD"])
+    def test_still_image_formats_are_developable(self, develop, fmt):
+        assert develop["_isDevelopableFormat"](fmt) is True
+
+    def test_video_is_not_developable(self, develop):
+        assert develop["_isDevelopableFormat"]("VIDEO") is False
+
+    def test_nil_format_is_not_developable(self, develop):
+        assert develop["_isDevelopableFormat"](None) is False
