@@ -47,7 +47,12 @@ local ErrorUtils = {
         PHOTO_ACCESS_DENIED = "PHOTO_ACCESS_DENIED",
         CATALOG_ACCESS_FAILED = "CATALOG_ACCESS_FAILED",
         RESOURCE_UNAVAILABLE = "RESOURCE_UNAVAILABLE",
-        OPERATION_FAILED = "OPERATION_FAILED"
+        OPERATION_FAILED = "OPERATION_FAILED",
+        -- Keep in sync with the external ErrorUtils.lua CODES table. Modules
+        -- capture THIS built-in copy at load (via _G.LightroomPythonBridge.ErrorUtils),
+        -- so a capability code missing here silently degrades to "ERROR" in
+        -- production. Parity is guarded by tests/test_plugin_lua_unit.py.
+        NOT_SUPPORTED = "NOT_SUPPORTED"
     },
     
     safeCall = function(func, ...)
@@ -202,7 +207,7 @@ local function registerSystemCommands()
             result = {
                 pong = true,
                 timestamp = os.time(),
-                version = "1.2.1",
+                version = "1.2.2",
                 protocolVersion = "1"
             }
         })

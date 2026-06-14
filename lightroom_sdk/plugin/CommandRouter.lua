@@ -53,7 +53,7 @@ function CommandRouter:init()
     self.pendingRequests = {}
     self.eventSubscribers = {}
     self.socketBridge = nil  -- Will be set during integration
-    self.commandStartTime = {}   -- requestId → os.clock()
+    self.commandStartTime = {}   -- requestId → os.time() (wall-clock seconds)
     self.cancelledRequests = {}   -- requestId → true
 
     local logger = getLogger()
@@ -65,7 +65,12 @@ function CommandRouter:isTimedOut(requestId, command)
     local startTime = self.commandStartTime[requestId]
     if not startTime then return false end
     local limit = LUA_COMMAND_TIMEOUT[command] or DEFAULT_LUA_TIMEOUT
-    return (os.clock() - startTime) >= limit
+    -- Use wall-clock time (os.time), not os.clock (CPU/process time). Long
+    -- handlers spend nearly all their elapsed time yielded inside SDK calls /
+    -- LrTasks.sleep / I/O, during which CPU time barely advances -- so os.clock
+    -- never reached the limit and the abort net was effectively dead.
+    -- Source: lr CLI bridge Lua bug audit, 2026-06-12.
+    return (os.time() - startTime) >= limit
 end
 
 -- Check if a request has been cancelled
@@ -211,8 +216,8 @@ function CommandRouter:_executeHandler(handler, message)
     LrTasks.startAsyncTask(function()
         logger:info("TRACE: CommandRouter - About to call handler for: " .. message.command)
 
-        -- Record start time for timeout self-detection
-        self.commandStartTime[message.id] = os.clock()
+        -- Record start time for timeout self-detection (wall-clock; see isTimedOut)
+        self.commandStartTime[message.id] = os.time()
 
         -- Inject _requestId and _command for abort checking in handlers
         local params = message.params or {}

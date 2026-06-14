@@ -1662,28 +1662,24 @@ function CatalogModule.getCurrentViewFilter(params, callback)
 end
 
 function CatalogModule.removeFromCatalog(params, callback)
-    ensureLrModules()
-    local photoId = params.photoId
+    -- The Lightroom Classic SDK provides no API to remove a photo from the
+    -- catalog: LrCatalog has no removePhoto/removePhotos method -- removal is a
+    -- UI-only action (Photo > Remove Photo from Catalog). The previous code
+    -- called catalog:removePhoto(photo), a nil method, so this verb always
+    -- failed with a cryptic OPERATION_FAILED (caught by safeCall). Short-circuit
+    -- with an honest capability error instead of entering a write transaction
+    -- for an operation that can never succeed.
+    -- Source: lr CLI bridge Lua bug audit, 2026-06-12.
+    local photoId = params and params.photoId
     if not photoId then
-        callback(ErrorUtils.createError("MISSING_PARAM", "Photo ID is required"))
+        callback(ErrorUtils.createError(ErrorUtils.CODES.MISSING_PARAM, "Photo ID is required"))
         return
     end
-    local catalog = LrApplication.activeCatalog()
-    catalog:withWriteAccessDo("Remove From Catalog", function()
-        local photo = catalog:getPhotoByLocalId(tonumber(photoId))
-        if not photo then
-            callback(ErrorUtils.createError("PHOTO_NOT_FOUND", "Photo not found"))
-            return
-        end
-        local success, err = ErrorUtils.safeCall(function()
-            catalog:removePhoto(photo)
-        end)
-        if success then
-            callback(ErrorUtils.createSuccess({ photoId = photoId, message = "Photo removed from catalog" }))
-        else
-            callback(ErrorUtils.createError("OPERATION_FAILED", tostring(err)))
-        end
-    end, { timeout = 10 })
+    callback(ErrorUtils.createError(
+        ErrorUtils.CODES.NOT_SUPPORTED,
+        "Removing a photo from the catalog is not supported by the Lightroom SDK. "
+        .. "Remove it manually in Lightroom (Photo > Remove Photo from Catalog)."
+    ))
 end
 
 -- Get photos from a specific collection by ID
