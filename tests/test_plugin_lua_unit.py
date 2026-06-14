@@ -215,9 +215,13 @@ class TestRemoveFromCatalogNotSupported:
     def _call(self, params):
         rt = _make_runtime()
         # Wire the real ErrorUtils into the bridge global BEFORE loading the
-        # module, exactly as PluginInit does. CatalogModule captures ErrorUtils
-        # once at load time via getErrorUtils(); without this it would fall back
-        # to a minimal stub with a different error shape.
+        # module, mirroring PluginInit. CatalogModule captures ErrorUtils once at
+        # load time via getErrorUtils(); without this it would fall back to a
+        # minimal stub with a different error shape.
+        # NOTE: production wires an INLINE ErrorUtils built in PluginInit.lua, not
+        # this external module — NOT_SUPPORTED must live in both CODES tables for
+        # this verb to ship the right code. Parity is guarded by
+        # TestErrorUtilsCodesParity below.
         rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
         cat = _load(rt, "CatalogModule")
         captured = []
@@ -279,3 +283,31 @@ class TestCommandRouterWallClockTimeout:
     def test_unknown_request_not_timed_out(self):
         cr = self._cr("{}")
         assert cr["isTimedOut"](cr, "missing", "preview.generate") is False
+
+
+class TestErrorUtilsCodesParity:
+    """Guard against the dual-ErrorUtils divergence.
+
+    There are TWO ErrorUtils in this plugin: the external ``ErrorUtils.lua``
+    module (what these unit tests load) and an INLINE copy built in
+    ``PluginInit.lua`` and wired to ``_G.LightroomPythonBridge.ErrorUtils`` — the
+    inline one is what production modules actually capture at load time. A
+    capability code added to one CODES table but not the other silently degrades
+    to the generic ``"ERROR"`` code in production (``createError`` falls back to
+    ``code or "ERROR"``). So a NOT_SUPPORTED-returning verb would unit-test green
+    against the external module while shipping ``"ERROR"`` to clients. Keep
+    NOT_SUPPORTED (and any future capability code) in BOTH tables.
+    """
+
+    _DECL = 'NOT_SUPPORTED = "NOT_SUPPORTED"'
+
+    def test_not_supported_in_external_errorutils(self):
+        text = (PLUGIN_DIR / "ErrorUtils.lua").read_text(encoding="utf-8")
+        assert self._DECL in text, "NOT_SUPPORTED missing from external ErrorUtils.lua CODES"
+
+    def test_not_supported_in_inline_plugininit(self):
+        text = (PLUGIN_DIR / "PluginInit.lua").read_text(encoding="utf-8")
+        assert self._DECL in text, (
+            "NOT_SUPPORTED missing from the INLINE PluginInit.lua CODES — "
+            "removeFromCatalog/editInPhotoshop would ship code='ERROR' in production"
+        )
