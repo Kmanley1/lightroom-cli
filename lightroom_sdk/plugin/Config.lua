@@ -42,7 +42,16 @@ function Config:init()
 end
 
 function Config:get(key)
-    return self.prefs[key] or defaults[key]
+    -- Distinguish "unset" (nil) from a legitimately stored boolean false.
+    -- The previous `self.prefs[key] or defaults[key]` clobbered a stored false
+    -- with the default, so every default-true flag (autoStart, enableDevelopSync,
+    -- enableCatalogSync, enablePreviewSync) could never be turned off.
+    -- Source: lr CLI bridge Lua bug audit, 2026-06-12.
+    local v = self.prefs[key]
+    if v == nil then
+        return defaults[key]
+    end
+    return v
 end
 
 function Config:set(key, value)

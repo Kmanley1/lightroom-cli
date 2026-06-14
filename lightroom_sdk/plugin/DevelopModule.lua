@@ -1083,14 +1083,33 @@ function DevelopModule.getRange(params, callback)
     
     logger:debug("Getting range for develop parameter: " .. param)
     
-    local success, range = ErrorUtils.safeCall(function()
+    -- LrDevelopController.getRange(param) returns TWO numbers (min, max);
+    -- ErrorUtils.safeCall (LrTasks.pcall) forwards both. The previous code used a
+    -- two-target assignment `local success, range = ...` which captured only min
+    -- and discarded max -- so `range` was always a number, the table branch was
+    -- dead, and asymmetric params got a fabricated symmetric range.
+    -- Source: lr CLI bridge Lua bug audit, 2026-06-12.
+    local success, rangeMin, rangeMax = ErrorUtils.safeCall(function()
         return LrDevelopController.getRange(param)
     end)
-    
-    if success and range then
-        logger:debug("Range returned: " .. tostring(range) .. " (type: " .. type(range) .. ")")
-        
-        -- Handle different return types from LrDevelopController.getRange
+    local range = rangeMin  -- backward-compat for the single-value fallbacks below
+
+    if success and range ~= nil then
+        logger:debug("Range returned: min=" .. tostring(rangeMin) .. " max=" .. tostring(rangeMax))
+
+        -- Preferred path: the real SDK contract is two numbers -> use directly.
+        if type(rangeMin) == "number" and type(rangeMax) == "number" then
+            callback({
+                result = {
+                    param = param,
+                    min = math.min(rangeMin, rangeMax),
+                    max = math.max(rangeMin, rangeMax)
+                }
+            })
+            return
+        end
+
+        -- Defensive fallbacks for non-standard return shapes:
         if type(range) == "table" and range.min and range.max then
             -- Standard range table (swap if reversed)
             local min_val = math.min(range.min, range.max)
@@ -3506,12 +3525,17 @@ function DevelopModule.applyLocalSettings(params, callback)
             end
         end
         
+        -- appliedSettings is keyed by setting name (string keys), so the Lua
+        -- length operator # returns 0; count explicitly via pairs.
+        -- Source: lr CLI bridge Lua bug audit, 2026-06-12.
+        local appliedCount = 0
+        for _ in pairs(appliedSettings) do appliedCount = appliedCount + 1 end
         return {
             appliedSettings = appliedSettings,
             errors = next(errors) and errors or nil,
             maskId = maskId,
-            settingCount = #appliedSettings,
-            message = "Applied " .. #appliedSettings .. " local settings"
+            settingCount = appliedCount,
+            message = "Applied " .. appliedCount .. " local settings"
         }
     end)
     
@@ -3653,14 +3677,19 @@ function DevelopModule.createMaskWithLocalAdjustments(params, callback)
             end
         end
         
+        -- appliedSettings is keyed by setting name (string keys), so the Lua
+        -- length operator # returns 0; count explicitly via pairs.
+        -- Source: lr CLI bridge Lua bug audit, 2026-06-12.
+        local appliedCount = 0
+        for _ in pairs(appliedSettings) do appliedCount = appliedCount + 1 end
         return {
             maskId = maskId,
             maskType = maskType,
             maskSubtype = maskSubtype,
             appliedSettings = appliedSettings,
             errors = next(errors) and errors or nil,
-            settingCount = #appliedSettings,
-            message = "Created mask with " .. #appliedSettings .. " local adjustments"
+            settingCount = appliedCount,
+            message = "Created mask with " .. appliedCount .. " local adjustments"
         }
     end)
     
@@ -4038,22 +4067,17 @@ function DevelopModule.resetHealing(params, callback)
 end
 
 function DevelopModule.editInPhotoshop(params, callback)
-    ensureLrModules()
-    local catalog = LrApplication.activeCatalog()
-    local photo = catalog:getTargetPhoto()
-    if not photo then
-        callback(ErrorUtils.createError("PHOTO_NOT_FOUND", "No photo selected"))
-        return
-    end
-    local success, err = ErrorUtils.safeCall(function()
-        photo:openInPhotoshop()
-        return { message = "Opened in Photoshop" }
-    end)
-    if success then
-        callback({ success = true, result = err })
-    else
-        callback({ error = { code = "EDIT_FAILED", message = "Failed to open in Photoshop: " .. tostring(err) } })
-    end
+    -- LrPhoto has no openInPhotoshop() method; "Edit in Photoshop" is a
+    -- Lightroom UI / external-editing action with no scriptable SDK equivalent.
+    -- The previous code called photo:openInPhotoshop(), a nil method, so this
+    -- verb always failed with a generic EDIT_FAILED (caught by safeCall).
+    -- Return an honest capability error instead of attempting a nonexistent call.
+    -- Source: lr CLI bridge Lua bug audit, 2026-06-12.
+    callback(ErrorUtils.createError(
+        ErrorUtils.CODES.NOT_SUPPORTED,
+        "Edit in Photoshop is not available through the Lightroom SDK. "
+        .. "Use Photo > Edit In > Edit in Adobe Photoshop in the Lightroom UI."
+    ))
 end
 
 return DevelopModule

@@ -169,3 +169,113 @@ class TestDevelopModuleDevelopableFormat:
 
     def test_nil_format_is_not_developable(self, develop):
         assert develop["_isDevelopableFormat"](None) is False
+
+
+class TestConfigGetBooleanFalse:
+    """Config:get must preserve a stored boolean ``false`` instead of the default.
+
+    The old ``return self.prefs[key] or defaults[key]`` is the Lua ``or`` trap: a
+    pref stored as ``false`` is falsy, so it was clobbered by its (true) default,
+    making every disable switch (autoStart / enableDevelopSync / enableCatalogSync /
+    enablePreviewSync) impossible to turn off.
+    """
+
+    def _cfg(self):
+        rt = _make_runtime()
+        cfg = _load(rt, "Config")
+        # Inject a real prefs table (bypasses LrPrefs). A stored ``false`` must survive.
+        rt.execute(
+            "require('Config').prefs = "
+            "{ autoStart = false, enableDevelopSync = false, serverPort = 99999 }"
+        )
+        return cfg
+
+    def test_stored_false_is_preserved(self):
+        cfg = self._cfg()
+        assert cfg["get"](cfg, "autoStart") is False
+        assert cfg["get"](cfg, "enableDevelopSync") is False
+
+    def test_unset_key_falls_back_to_default(self):
+        cfg = self._cfg()
+        # enableCatalogSync is absent from prefs -> default (true).
+        assert cfg["get"](cfg, "enableCatalogSync") is True
+
+    def test_stored_value_overrides_default(self):
+        cfg = self._cfg()
+        assert cfg["get"](cfg, "serverPort") == 99999
+
+
+class TestRemoveFromCatalogNotSupported:
+    """removeFromCatalog must return an honest NOT_SUPPORTED, not call a nil SDK method.
+
+    LrCatalog has no removePhoto(); the old code entered a write transaction and
+    called catalog:removePhoto(photo), which always failed with OPERATION_FAILED.
+    """
+
+    def _call(self, params):
+        rt = _make_runtime()
+        # Wire the real ErrorUtils into the bridge global BEFORE loading the
+        # module, exactly as PluginInit does. CatalogModule captures ErrorUtils
+        # once at load time via getErrorUtils(); without this it would fall back
+        # to a minimal stub with a different error shape.
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        cat = _load(rt, "CatalogModule")
+        captured = []
+        cat["removeFromCatalog"](rt.table_from(params), lambda r: captured.append(r))
+        return captured
+
+    def test_missing_photo_id(self):
+        captured = self._call({})
+        assert len(captured) == 1
+        assert captured[0]["success"] is False
+        assert captured[0]["error"]["code"] == "MISSING_PARAM"
+
+    def test_valid_id_returns_not_supported(self):
+        captured = self._call({"photoId": 12345})
+        assert len(captured) == 1
+        assert captured[0]["success"] is False
+        assert captured[0]["error"]["code"] == "NOT_SUPPORTED"
+
+
+class TestEditInPhotoshopNotSupported:
+    """editInPhotoshop must return NOT_SUPPORTED, not call the nonexistent
+    LrPhoto:openInPhotoshop()."""
+
+    def test_returns_not_supported(self):
+        rt = _make_runtime()
+        # Wire the real ErrorUtils before load (see TestRemoveFromCatalogNotSupported).
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        dev = _load(rt, "DevelopModule")
+        captured = []
+        dev["editInPhotoshop"](rt.table_from({"photoId": 1}), lambda r: captured.append(r))
+        assert len(captured) == 1
+        assert captured[0]["success"] is False
+        assert captured[0]["error"]["code"] == "NOT_SUPPORTED"
+
+
+class TestCommandRouterWallClockTimeout:
+    """isTimedOut must use wall-clock os.time, not CPU-time os.clock.
+
+    Long handlers spend their elapsed time yielded inside SDK/sleep/I/O, where CPU
+    time barely advances, so the os.clock-based check never fired. We simulate a
+    request whose recorded start time is well in the past and assert it is detected.
+    """
+
+    def _cr(self, start_times_lua):
+        rt = _make_runtime()
+        cr = _load(rt, "CommandRouter")
+        rt.execute(f"require('CommandRouter').commandStartTime = {start_times_lua}")
+        return cr
+
+    def test_elapsed_beyond_limit_is_timed_out(self):
+        # preview.generate limit is 110s; started ~9999s ago.
+        cr = self._cr("{ req1 = os.time() - 9999 }")
+        assert cr["isTimedOut"](cr, "req1", "preview.generate") is True
+
+    def test_recent_request_not_timed_out(self):
+        cr = self._cr("{ req2 = os.time() }")
+        assert cr["isTimedOut"](cr, "req2", "preview.generate") is False
+
+    def test_unknown_request_not_timed_out(self):
+        cr = self._cr("{}")
+        assert cr["isTimedOut"](cr, "missing", "preview.generate") is False
