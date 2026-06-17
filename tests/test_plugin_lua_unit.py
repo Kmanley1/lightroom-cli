@@ -311,3 +311,48 @@ class TestErrorUtilsCodesParity:
             "NOT_SUPPORTED missing from the INLINE PluginInit.lua CODES — "
             "removeFromCatalog/editInPhotoshop would ship code='ERROR' in production"
         )
+
+
+class TestGetSelectedPhotosFilmstripGuard:
+    """getSelectedPhotos must NOT report the whole filmstrip when nothing is selected.
+
+    ``LrCatalog:getTargetPhotos()`` returns the *entire filmstrip* when no photos are
+    selected (a well-known LrC gotcha), and the old guard only caught the empty case —
+    so "get selected" reported the whole catalog as the selection. The fix gates on
+    ``getTargetPhoto()`` (singular, the active photo): nil => nothing is truly selected
+    => return empty. The decision is factored into the pure ``_resolveSelection`` helper
+    so it is unit-testable without a live Lightroom (the rest of the handler — read
+    access, metadata extraction — still needs LR, but the BUG lives entirely here).
+    """
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        # CatalogModule captures ErrorUtils at load; wire the real one (see other tests).
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    def _resolve(self, cat, target_photo, photos):
+        rt, module = cat
+        arr = rt.table_from(photos) if photos is not None else None
+        result = module["_resolveSelection"](target_photo, arr)
+        if result is None:
+            return None
+        return list(result.values())
+
+    def test_nothing_selected_returns_empty_even_when_filmstrip_full(self, cat):
+        # The exact bug: getTargetPhoto() is nil but getTargetPhotos() gave the filmstrip.
+        assert self._resolve(cat, None, ["p1", "p2", "p3", "...whole filmstrip..."]) == []
+
+    def test_selection_is_returned_when_active_photo_present(self, cat):
+        assert self._resolve(cat, "active", ["p1", "p2"]) == ["p1", "p2"]
+
+    def test_single_selection(self, cat):
+        assert self._resolve(cat, "active", ["only"]) == ["only"]
+
+    def test_active_photo_but_nil_list_is_empty(self, cat):
+        # Defensive: never nil-iterate if getTargetPhotos() somehow failed.
+        assert self._resolve(cat, "active", None) == []
+
+    def test_nothing_selected_and_empty_filmstrip(self, cat):
+        assert self._resolve(cat, None, []) == []

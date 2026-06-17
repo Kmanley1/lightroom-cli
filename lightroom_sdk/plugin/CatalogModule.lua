@@ -222,6 +222,17 @@ function CatalogModule.getPhotoMetadata(params, callback)
     end)
 end
 
+-- Resolve the effective selection from the catalog's target photo(s).
+-- LrCatalog:getTargetPhotos() returns the WHOLE FILMSTRIP when nothing is selected, so
+-- gate on getTargetPhoto() (singular, the active photo): nil => nothing is truly selected.
+-- Pure + side-effect-free so it is unit-testable without a live Lightroom.
+function CatalogModule._resolveSelection(targetPhoto, targetPhotos)
+    if targetPhoto == nil then
+        return {}
+    end
+    return targetPhotos or {}
+end
+
 -- Get current selection
 function CatalogModule.getSelectedPhotos(params, callback)
     local wrappedCallback = ErrorUtils.wrapCallback(callback, "getSelectedPhotos")
@@ -240,11 +251,21 @@ function CatalogModule.getSelectedPhotos(params, callback)
     local catalog = LrApplication.activeCatalog()
     
     catalog:withReadAccessDo(function()
-        local selectedSuccess, selectedPhotos = ErrorUtils.safeCall(function()
+        local targetPhotoSuccess, targetPhoto = ErrorUtils.safeCall(function()
+            return catalog:getTargetPhoto()
+        end)
+        local selectedSuccess, targetPhotos = ErrorUtils.safeCall(function()
             return catalog:getTargetPhotos()
         end)
-        
-        if not selectedSuccess or not selectedPhotos or #selectedPhotos == 0 then
+
+        -- getTargetPhotos() is the whole filmstrip when nothing is selected; gate on the
+        -- singular active photo so "get selected" never reports the entire catalog.
+        local selectedPhotos = CatalogModule._resolveSelection(
+            (targetPhotoSuccess and targetPhoto) or nil,
+            (selectedSuccess and targetPhotos) or nil
+        )
+
+        if #selectedPhotos == 0 then
             wrappedCallback(ErrorUtils.createSuccess({
                 photos = {},
                 count = 0
