@@ -715,14 +715,25 @@ function CatalogModule.findPhotos(params, callback)
     -- Step 1: Get candidate photos. For keyword searches use the keyword INDEX
     -- (keyword:getPhotos) instead of scanning every photo -- a keyword filter on a
     -- 30k+ catalog otherwise full-scans and exceeds the command timeout (#9). Other
-    -- filters still scan; matchPhoto then re-checks the keyword candidate set + the rest.
+    -- filters still scan.
+    local usingKeywordIndex = type(searchDesc.keyword) == "string" and searchDesc.keyword ~= ""
     local allPhotos
-    if type(searchDesc.keyword) == "string" and searchDesc.keyword ~= "" then
+    if usingKeywordIndex then
         allPhotos = getKeywordCandidatePhotos(catalog, searchDesc.keyword)
     else
         catalog:withReadAccessDo(function()
             allPhotos = catalog:getAllPhotos()
         end)
+    end
+
+    -- The keyword-index candidates already satisfy the keyword predicate, so drop it from
+    -- the per-photo match -- re-reading every candidate's keywords was the slow step.
+    local matchDesc = searchDesc
+    if usingKeywordIndex then
+        matchDesc = {}
+        for k, v in pairs(searchDesc) do
+            if k ~= "keyword" then matchDesc[k] = v end
+        end
     end
 
     if not allPhotos or #allPhotos == 0 then
@@ -753,7 +764,7 @@ function CatalogModule.findPhotos(params, callback)
         local chunkOk, chunkErr = LrTasks.pcall(function()
             catalog:withReadAccessDo(function()
                 for i = chunkStart, chunkEnd do
-                    if matchPhoto(allPhotos[i], searchDesc) then
+                    if matchPhoto(allPhotos[i], matchDesc) then
                         table.insert(filtered, allPhotos[i])
                     end
                 end
