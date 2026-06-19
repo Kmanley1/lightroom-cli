@@ -446,3 +446,47 @@ class TestAddKeywordsFindsExistingKeyword:
         rt, module = cat
         assert module["_findKeywordByName"](None, "x") is None
         assert module["_findKeywordByName"](rt.eval("{}"), "x") is None
+
+
+class TestCollectKeywordsMatching:
+    """findPhotos resolves keyword searches via the keyword index (#9). The pure matcher
+    collects every keyword whose name contains the substring (case-insensitive, recursive);
+    findPhotos then unions their getPhotos() instead of scanning the whole catalog.
+    """
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    _KW = """
+        local function kw(name, children)
+            return { getName = function(self) return name end,
+                     getChildren = function(self) return children end }
+        end
+        tree = {
+            kw('Carolyn'),
+            kw('source:onedrive-carolyn'),
+            kw('People', { kw('Ken'), kw('CAROLYN Smith') }),
+        }
+    """
+
+    def _names(self, cat, substr):
+        rt, module = cat
+        rt.execute(self._KW)
+        matched = module["_collectKeywordsMatching"](rt.eval("tree"), substr)
+        return sorted(m["getName"](m) for m in matched.values())
+
+    def test_substring_case_insensitive_recursive(self, cat):
+        # 'carolyn' matches Carolyn, source:onedrive-carolyn, and nested 'CAROLYN Smith'
+        assert self._names(cat, "carolyn") == ["CAROLYN Smith", "Carolyn", "source:onedrive-carolyn"]
+
+    def test_no_match_returns_empty(self, cat):
+        assert self._names(cat, "zzz-nope") == []
+
+    def test_nil_inputs_safe(self, cat):
+        rt, module = cat
+        assert list(module["_collectKeywordsMatching"](None, "x").values()) == []
+        rt.execute(self._KW)
+        assert list(module["_collectKeywordsMatching"](rt.eval("tree"), None).values()) == []

@@ -623,6 +623,48 @@ local function matchPhoto(photo, searchDesc)
     return true
 end
 
+-- Pure: recursively collect every keyword whose name contains `substr` (case-insensitive).
+-- Each element responds to :getName() and optionally :getChildren(). Unit-testable.
+function CatalogModule._collectKeywordsMatching(keywords, substr)
+    local matches = {}
+    if type(keywords) ~= "table" or substr == nil then return matches end
+    local needle = string.lower(substr)
+    local function visit(list)
+        for _, kw in ipairs(list) do
+            if kw.getName and string.find(string.lower(kw:getName()), needle, 1, true) then
+                table.insert(matches, kw)
+            end
+            if kw.getChildren then
+                local children = kw:getChildren()
+                if children then visit(children) end
+            end
+        end
+    end
+    visit(keywords)
+    return matches
+end
+
+-- Candidate photos for a keyword substring via the keyword INDEX (keyword:getPhotos),
+-- de-duplicated by localIdentifier. Avoids scanning the whole catalog for keyword
+-- searches -- a keyword filter on a 30k+ catalog otherwise full-scans and exceeds the
+-- command timeout (#9). Uses only SDK methods already proven in this module.
+local function getKeywordCandidatePhotos(catalog, substr)
+    local seen, photos = {}, {}
+    catalog:withReadAccessDo(function()
+        local matched = CatalogModule._collectKeywordsMatching(catalog:getKeywords(), substr)
+        for _, kw in ipairs(matched) do
+            for _, photo in ipairs(kw:getPhotos()) do
+                local id = photo.localIdentifier
+                if not seen[id] then
+                    seen[id] = true
+                    table.insert(photos, photo)
+                end
+            end
+        end
+    end)
+    return photos
+end
+
 -- Advanced photo search with criteria
 function CatalogModule.findPhotos(params, callback)
     ensureLrModules()
@@ -670,11 +712,18 @@ function CatalogModule.findPhotos(params, callback)
     local router = getCommandRouter()
     local streamMode = params._stream == true and router ~= nil and requestId ~= nil
 
-    -- Step 1: Get all photos (lightweight, no chunking needed)
+    -- Step 1: Get candidate photos. For keyword searches use the keyword INDEX
+    -- (keyword:getPhotos) instead of scanning every photo -- a keyword filter on a
+    -- 30k+ catalog otherwise full-scans and exceeds the command timeout (#9). Other
+    -- filters still scan; matchPhoto then re-checks the keyword candidate set + the rest.
     local allPhotos
-    catalog:withReadAccessDo(function()
-        allPhotos = catalog:getAllPhotos()
-    end)
+    if type(searchDesc.keyword) == "string" and searchDesc.keyword ~= "" then
+        allPhotos = getKeywordCandidatePhotos(catalog, searchDesc.keyword)
+    else
+        catalog:withReadAccessDo(function()
+            allPhotos = catalog:getAllPhotos()
+        end)
+    end
 
     if not allPhotos or #allPhotos == 0 then
         callback({
