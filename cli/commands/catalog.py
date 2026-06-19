@@ -39,7 +39,9 @@ def list_photos(ctx, limit, offset, **kwargs):
 @click.pass_context
 def search(ctx, query, limit, offset, **kwargs):
     """Search photos by keyword"""
-    criteria = {"query": query}
+    # Map the free-text query to the keyword filter (a valid findPhotos key). Sending
+    # {"query": ...} hit no known filter and returned the ENTIRE catalog as "results".
+    criteria = {"keyword": query}
     execute_command(ctx, "catalog.searchPhotos", {"criteria": criteria, "limit": limit, "offset": offset}, timeout=60.0)
 
 

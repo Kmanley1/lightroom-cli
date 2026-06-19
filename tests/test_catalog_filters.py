@@ -3,6 +3,7 @@
 import pytest
 
 from lightroom_sdk.client import LightroomClient
+from lightroom_sdk.exceptions import LightroomSDKError
 
 
 @pytest.mark.asyncio
@@ -157,22 +158,21 @@ async def test_find_photos_with_combined_filters(mock_lr_server):
 
 @pytest.mark.asyncio
 async def test_find_photos_with_unknown_filter_key(mock_lr_server):
-    """不明なフィルタキーで warnings フィールドが返ること"""
+    """An unknown filter key now fails closed (INVALID_PARAM) instead of a soft warnings list.
+
+    Previously findPhotos warned and ran an empty predicate -> matched the whole catalog.
+    """
     mock_lr_server.register_response(
         "catalog.findPhotos",
-        {
-            "photos": [],
-            "total": 0,
-            "warnings": ["Unknown filter key: unknownKey"],
-        },
+        {"error": {"code": "INVALID_PARAM", "message": "Unknown filter key(s): unknownKey"}},
     )
     async with LightroomClient(port_file=str(mock_lr_server.port_file)) as client:
-        result = await client.execute_command(
-            "catalog.findPhotos",
-            {"searchDesc": {"unknownKey": "value"}, "limit": 50, "offset": 0},
-        )
-    assert "warnings" in result
-    assert any("unknownKey" in w for w in result["warnings"])
+        with pytest.raises(LightroomSDKError) as exc_info:
+            await client.execute_command(
+                "catalog.findPhotos",
+                {"searchDesc": {"unknownKey": "value"}, "limit": 50, "offset": 0},
+            )
+    assert "unknownKey" in str(exc_info.value)
 
 
 @pytest.mark.asyncio

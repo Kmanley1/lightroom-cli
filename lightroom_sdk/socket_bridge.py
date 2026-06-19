@@ -162,6 +162,11 @@ class SocketBridge:
                 break
 
         self._connected = False
+        # Connection dropped -- release any awaiters so they fail fast instead of
+        # blocking on their own (up to 300s) timeout.
+        from .exceptions import ConnectionError as LRConnectionError
+
+        self._fail_pending(LRConnectionError("Connection to Lightroom lost"))
 
     async def _handle_message(self, message: Dict[str, Any]) -> None:
         """Route received messages to appropriate handlers"""
@@ -239,6 +244,18 @@ class SocketBridge:
 
         return {"id": "stream", "success": True, "result": result}
 
+    def _fail_pending(self, exc: Exception) -> None:
+        """Fail every in-flight request/stream so awaiters don't hang until their own
+        (up to 300s) timeout when the connection drops or we disconnect."""
+        pending, self._pending_requests = self._pending_requests, {}
+        for future in pending.values():
+            if not future.done():
+                future.set_exception(exc)
+        streams, self._pending_streams = self._pending_streams, {}
+        for aggregator in streams.values():
+            if not aggregator.future.done():
+                aggregator.future.set_exception(exc)
+
     async def send_command(
         self,
         command: str,
@@ -306,6 +323,11 @@ class SocketBridge:
                 await self._receive_task
             except asyncio.CancelledError:
                 pass
+
+        # Release any in-flight awaiters before tearing down the sockets.
+        from .exceptions import ConnectionError as LRConnectionError
+
+        self._fail_pending(LRConnectionError("Disconnected from Lightroom"))
 
         for writer in [self._send_writer, self._receive_writer]:
             if writer:

@@ -356,3 +356,93 @@ class TestGetSelectedPhotosFilmstripGuard:
 
     def test_nothing_selected_and_empty_filmstrip(self, cat):
         assert self._resolve(cat, None, []) == []
+
+
+class TestFindPhotosUnknownFilterKeyFailsClosed:
+    """findPhotos must reject unknown filter keys, not silently match every photo.
+
+    The old code collected a ``warnings`` list and ran an empty predicate, so an unknown
+    key (e.g. the legacy ``search`` path's ``{query=...}``) matched the whole catalog and
+    returned it as a "search result". The decision is the pure ``_unknownFilterKeys`` helper.
+    """
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    def _unknown(self, cat, desc):
+        rt, module = cat
+        arg = rt.table_from(desc) if desc is not None else None
+        result = module["_unknownFilterKeys"](arg)
+        return None if result is None else list(result.values())
+
+    def test_all_known_keys_returns_nil(self, cat):
+        assert self._unknown(cat, {"keyword": "x", "rating": 5, "flag": "pick"}) is None
+
+    def test_empty_desc_returns_nil(self, cat):
+        assert self._unknown(cat, {}) is None
+
+    def test_non_table_returns_nil(self, cat):
+        assert self._unknown(cat, None) is None
+
+    def test_query_key_is_unknown(self, cat):
+        # The exact #8 bug: the search command sent {query=...}.
+        assert self._unknown(cat, {"query": "sunset"}) == ["query"]
+
+    def test_unknown_keys_are_sorted(self, cat):
+        assert self._unknown(cat, {"zzz": 1, "aaa": 2, "keyword": "k"}) == ["aaa", "zzz"]
+
+
+class TestAddKeywordsFindsExistingKeyword:
+    """addKeywords must reuse an existing keyword object, not spawn duplicates.
+
+    ``catalog:createKeyword(name, {}, false, nil, true)`` is parent-scoped and unreliable
+    for top-level reuse, so calling it per tag created duplicate keyword OBJECTS (the dup
+    sets merged in production). The pure ``_findKeywordByName`` helper finds an existing
+    keyword (recursively) so addKeywords reuses it.
+    """
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    # A keyword tree of mocks; each responds to :getName() / :getChildren().
+    _KW = """
+        local function kw(name, children)
+            return {
+                getName = function(self) return name end,
+                getChildren = function(self) return children end,
+            }
+        end
+        tree = { kw('source:onedrive-ken'), kw('People', { kw('Carolyn'), kw('Ken') }) }
+    """
+
+    def _tree(self, cat):
+        rt, module = cat
+        rt.execute(self._KW)
+        return module, rt.eval("tree")
+
+    def test_finds_top_level_keyword(self, cat):
+        module, tree = self._tree(cat)
+        found = module["_findKeywordByName"](tree, "source:onedrive-ken")
+        assert found is not None
+        assert found["getName"](found) == "source:onedrive-ken"
+
+    def test_finds_nested_keyword(self, cat):
+        module, tree = self._tree(cat)
+        found = module["_findKeywordByName"](tree, "Carolyn")
+        assert found is not None
+        assert found["getName"](found) == "Carolyn"
+
+    def test_missing_keyword_returns_nil(self, cat):
+        module, tree = self._tree(cat)
+        assert module["_findKeywordByName"](tree, "Nonexistent") is None
+
+    def test_nil_and_empty_are_safe(self, cat):
+        rt, module = cat
+        assert module["_findKeywordByName"](None, "x") is None
+        assert module["_findKeywordByName"](rt.eval("{}"), "x") is None

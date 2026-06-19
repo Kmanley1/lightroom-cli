@@ -39,6 +39,7 @@ class ResilientSocketBridge:
         self._state = ConnectionState.DISCONNECTED
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._event_handlers: Dict[str, list[Callable]] = {}
+        self._reconnect_lock = asyncio.Lock()
 
     @property
     def state(self) -> ConnectionState:
@@ -67,7 +68,7 @@ class ResilientSocketBridge:
         if self._heartbeat_interval > 0:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
-    async def send_command(self, command: str, params=None, timeout=30.0):
+    async def send_command(self, command: str, params=None, timeout=30.0, stream: bool = False, progress_callback=None):
         if self._state == ConnectionState.SHUTDOWN:
             from .exceptions import ConnectionError as LRConnectionError
 
@@ -77,13 +78,17 @@ class ResilientSocketBridge:
             await self.connect()
 
         try:
-            return await self._bridge.send_command(command, params, timeout)
+            return await self._bridge.send_command(
+                command, params, timeout, stream=stream, progress_callback=progress_callback
+            )
         except (ConnectionError, OSError, EOFError) as e:
             if self._state == ConnectionState.SHUTDOWN:
                 raise
             logger.warning(f"Connection error on '{command}', reconnecting: {e}")
             await self._reconnect()
-            return await self._bridge.send_command(command, params, timeout)
+            return await self._bridge.send_command(
+                command, params, timeout, stream=stream, progress_callback=progress_callback
+            )
         except asyncio.TimeoutError:
             raise
         except Exception as e:
@@ -96,40 +101,45 @@ class ResilientSocketBridge:
             if isinstance(e, LRConnectionError):
                 logger.warning(f"LR connection error on '{command}', reconnecting: {e}")
                 await self._reconnect()
-                return await self._bridge.send_command(command, params, timeout)
+                return await self._bridge.send_command(
+                    command, params, timeout, stream=stream, progress_callback=progress_callback
+                )
             raise
 
     async def _reconnect(self) -> None:
-        self._state = ConnectionState.RECONNECTING
-        # 旧bridgeをクリーンアップ（ソケットリーク防止）
-        if self._bridge:
-            try:
-                await self._bridge.disconnect()
-            except Exception:
-                pass
-        delay = 1.0
-        for attempt in range(self._max_reconnect):
-            try:
-                self._bridge = SocketBridge(self._host, self._port_file)
-                for name, handlers in self._event_handlers.items():
-                    for h in handlers:
-                        self._bridge.on_event(name, h)
-                self._bridge.on_event("server.shutdown", self._handle_shutdown_event)
-                await self._bridge.connect(retry_attempts=1)
-                self._state = ConnectionState.CONNECTED
-                return
-            except Exception:
-                if self._bridge:
-                    try:
-                        await self._bridge.disconnect()
-                    except Exception:
-                        pass
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 30.0)
-        self._state = ConnectionState.DISCONNECTED
-        from .exceptions import ConnectionError as LRConnectionError
+        # Serialize reconnects so a heartbeat-triggered reconnect and a send-triggered
+        # one can't both rebuild the bridge at once (which would leak a socket).
+        async with self._reconnect_lock:
+            self._state = ConnectionState.RECONNECTING
+            # 旧bridgeをクリーンアップ（ソケットリーク防止）
+            if self._bridge:
+                try:
+                    await self._bridge.disconnect()
+                except Exception:
+                    pass
+            delay = 1.0
+            for attempt in range(self._max_reconnect):
+                try:
+                    self._bridge = SocketBridge(self._host, self._port_file)
+                    for name, handlers in self._event_handlers.items():
+                        for h in handlers:
+                            self._bridge.on_event(name, h)
+                    self._bridge.on_event("server.shutdown", self._handle_shutdown_event)
+                    await self._bridge.connect(retry_attempts=1)
+                    self._state = ConnectionState.CONNECTED
+                    return
+                except Exception:
+                    if self._bridge:
+                        try:
+                            await self._bridge.disconnect()
+                        except Exception:
+                            pass
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+            self._state = ConnectionState.DISCONNECTED
+            from .exceptions import ConnectionError as LRConnectionError
 
-        raise LRConnectionError("Reconnection failed")
+            raise LRConnectionError("Reconnection failed")
 
     def _handle_shutdown_event(self, data: Dict[str, Any]) -> None:
         logger.info(f"Shutdown event received: {data}")
@@ -150,8 +160,22 @@ class ResilientSocketBridge:
         while self._state == ConnectionState.CONNECTED:
             try:
                 await asyncio.sleep(self._heartbeat_interval)
+            except asyncio.CancelledError:
+                break
+            if self._state != ConnectionState.CONNECTED:
+                break
+            try:
                 await self._bridge.send_command("system.ping", timeout=5.0)
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.warning(f"Heartbeat failed: {e}")
+                if self._state == ConnectionState.SHUTDOWN:
+                    break
+                # A failed heartbeat means the connection is dead -- proactively
+                # reconnect instead of pinging a dead socket forever.
+                logger.warning(f"Heartbeat failed, reconnecting: {e}")
+                try:
+                    await self._reconnect()
+                except Exception as reconnect_err:
+                    logger.error(f"Heartbeat-triggered reconnect failed: {reconnect_err}")
+                    break

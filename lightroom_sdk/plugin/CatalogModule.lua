@@ -481,6 +481,24 @@ local KNOWN_FILTER_KEYS = {
     fileFormat = true, keyword = true, filename = true,
 }
 
+-- Returns a sorted list of filter keys in searchDesc that are not recognized, or nil
+-- if all are known. Pure (no SDK) so it is unit-testable. findPhotos uses this to fail
+-- closed: an unknown key must NOT fall through to an empty predicate that matches every
+-- photo (that returned the entire catalog as a "search result" -- the legacy `search`
+-- path sent {query=...}).
+function CatalogModule._unknownFilterKeys(searchDesc)
+    if type(searchDesc) ~= "table" then return nil end
+    local unknown = {}
+    for key, _ in pairs(searchDesc) do
+        if not KNOWN_FILTER_KEYS[key] then
+            table.insert(unknown, tostring(key))
+        end
+    end
+    if #unknown == 0 then return nil end
+    table.sort(unknown)
+    return unknown
+end
+
 -- Chunk processing constants
 local FILTER_CHUNK_SIZE = 50
 local METADATA_CHUNK_SIZE = 50
@@ -615,13 +633,22 @@ function CatalogModule.findPhotos(params, callback)
 
     logger:debug("Finding photos with search criteria")
 
-    -- Validate: check for unknown filter keys
-    local warnings = {}
-    for key, _ in pairs(searchDesc) do
-        if not KNOWN_FILTER_KEYS[key] then
-            table.insert(warnings, "Unknown filter key: " .. tostring(key))
-        end
+    -- Validate: fail closed on unknown filter keys. An unrecognized key must NOT
+    -- silently match every photo -- that returned the entire catalog as a "search
+    -- result" (the legacy `search` path sent {query=...}).
+    local unknownKeys = CatalogModule._unknownFilterKeys(searchDesc)
+    if unknownKeys then
+        callback({
+            error = {
+                code = "INVALID_PARAM",
+                message = "Unknown filter key(s): " .. table.concat(unknownKeys, ", ")
+                    .. ". Valid keys: flag, rating, ratingOp, colorLabel, camera, folderPath, "
+                    .. "captureDateFrom, captureDateTo, fileFormat, keyword, filename."
+            }
+        })
+        return
     end
+    local warnings = {}
 
     -- Validate: rating must be a number
     if searchDesc.rating ~= nil and type(searchDesc.rating) ~= "number" then
@@ -1075,6 +1102,25 @@ function CatalogModule.setRating(params, callback)
 end
 
 -- Add keywords to photo (Gap C fix)
+-- Recursively find an existing keyword by exact name in a keyword list (each element
+-- responds to :getName() and optionally :getChildren()). Returns the keyword or nil.
+-- Pure (no catalog access) so it is unit-testable. addKeywords uses it to reuse an
+-- existing keyword object instead of catalog:createKeyword(name, {}, false, nil, true),
+-- whose parent-scoped reuse is unreliable and silently spawns duplicate keyword objects.
+function CatalogModule._findKeywordByName(keywords, name)
+    if type(keywords) ~= "table" or name == nil then return nil end
+    for _, kw in ipairs(keywords) do
+        if kw.getName and kw:getName() == name then
+            return kw
+        end
+        if kw.getChildren then
+            local found = CatalogModule._findKeywordByName(kw:getChildren(), name)
+            if found then return found end
+        end
+    end
+    return nil
+end
+
 function CatalogModule.addKeywords(params, callback)
     ensureLrModules()
     local logger = getLogger()
@@ -1096,8 +1142,18 @@ function CatalogModule.addKeywords(params, callback)
         catalog:withWriteAccessDo("Add Keywords", function()
             local photo = catalog:getPhotoByLocalId(tonumber(photoId))
             if not photo then error("Photo not found: " .. tostring(photoId)) end
+            -- Reuse existing keyword objects (whole tree); only create when truly absent.
+            -- catalog:createKeyword(parent=nil, returnIfExists) is parent-scoped and
+            -- unreliable, so calling it blindly spawns duplicate keyword objects.
+            local existingKeywords = catalog:getKeywords()
+            local createdThisCall = {}
             for _, kwName in ipairs(keywords) do
-                local keyword = catalog:createKeyword(kwName, {}, false, nil, true)
+                local keyword = createdThisCall[kwName]
+                    or CatalogModule._findKeywordByName(existingKeywords, kwName)
+                if not keyword then
+                    keyword = catalog:createKeyword(kwName, {}, false, nil, true)
+                    createdThisCall[kwName] = keyword
+                end
                 if keyword then
                     photo:addKeyword(keyword)
                     table.insert(addedKeywords, kwName)
