@@ -21,6 +21,22 @@ class ConnectionError(LightroomSDKError):
     pass
 
 
+class MutatingNotRetriedError(ConnectionError):
+    """A mutating command was interrupted by a connection drop and deliberately NOT auto-retried.
+
+    It may have already applied on the plugin before the socket dropped, so re-sending it would risk
+    a double-apply. Subclasses ConnectionError so existing connection-error handling still catches it.
+    """
+
+    def __init__(self, message=None, command=None, code=None, details=None):
+        if message is None:
+            message = (
+                f"Connection dropped during mutating command '{command}'; it was not retried "
+                "(it may have already applied). Verify state and re-issue if needed."
+            )
+        super().__init__(message, code=code or "MUTATING_NOT_RETRIED", details=details)
+
+
 class TimeoutError(LightroomSDKError):
     """Command timeout errors"""
 

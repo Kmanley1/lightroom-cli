@@ -86,9 +86,7 @@ class ResilientSocketBridge:
                 raise
             logger.warning(f"Connection error on '{command}', reconnecting: {e}")
             await self._reconnect()
-            return await self._bridge.send_command(
-                command, params, timeout, stream=stream, progress_callback=progress_callback
-            )
+            return await self._retry_after_reconnect(command, params, timeout, stream, progress_callback)
         except asyncio.TimeoutError:
             raise
         except Exception as e:
@@ -101,10 +99,31 @@ class ResilientSocketBridge:
             if isinstance(e, LRConnectionError):
                 logger.warning(f"LR connection error on '{command}', reconnecting: {e}")
                 await self._reconnect()
-                return await self._bridge.send_command(
-                    command, params, timeout, stream=stream, progress_callback=progress_callback
-                )
+                return await self._retry_after_reconnect(command, params, timeout, stream, progress_callback)
             raise
+
+    def _is_mutating(self, command: str) -> bool:
+        """Whether `command` mutates state, per its schema. Unknown commands are treated as mutating
+        -- conservative: never auto-retry something we can't prove is a safe, idempotent read."""
+        try:
+            from lightroom_sdk.schema import get_schema
+
+            schema = get_schema(command)
+        except Exception:
+            return True
+        return True if schema is None else schema.mutating
+
+    async def _retry_after_reconnect(self, command, params, timeout, stream, progress_callback):
+        # A mutating command may have applied on the plugin before the socket dropped; blindly
+        # re-sending would double-apply (e.g. add a keyword or export twice). Reads are idempotent --
+        # safe to retry. For mutations, surface the uncertainty instead of silently re-applying.
+        if self._is_mutating(command):
+            from .exceptions import MutatingNotRetriedError
+
+            raise MutatingNotRetriedError(command=command)
+        return await self._bridge.send_command(
+            command, params, timeout, stream=stream, progress_callback=progress_callback
+        )
 
     async def _reconnect(self) -> None:
         # Serialize reconnects so a heartbeat-triggered reconnect and a send-triggered
