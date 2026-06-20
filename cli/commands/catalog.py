@@ -430,6 +430,16 @@ def save_metadata(ctx, photo_ids, dry_run, **kwargs):
     execute_command(ctx, "catalog.saveMetadata", params, timeout=120.0)
 
 
+@catalog.command("import")
+@click.argument("paths", nargs=-1, required=True)
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def import_photos(ctx, paths, dry_run, **kwargs):
+    """Add existing files to the catalog (referenced in place): lr catalog import <path>..."""
+    execute_command(ctx, "catalog.importPhotos", {"paths": list(paths)}, timeout=120.0)
+
+
 @catalog.command("create-smart-collection")
 @click.argument("name")
 @click.option("--search-desc", default=None, help="JSON search descriptor")

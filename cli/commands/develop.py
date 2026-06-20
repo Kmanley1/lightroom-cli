@@ -88,6 +88,92 @@ def batch_apply(ctx, photo_ids, settings_pairs, dry_run, **kwargs):
     execute_command(ctx, "develop.batchApplySettings", params, timeout=60.0)
 
 
+@develop.group("mask")
+def mask():
+    """Masking: create / combine / invert / delete develop masks on the active photo."""
+    pass
+
+
+def _mask_geometry_opts(func):
+    func = click.option("--type", "mask_type", default="brush", help="Mask type (brush, linearGradient, radialGradient, rangeMask, ...)")(func)
+    func = click.option("--subtype", default=None, help="Mask subtype (type-specific)")(func)
+    func = click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")(func)
+    return func
+
+
+def _mask_geometry_params(mask_type, subtype):
+    params = {"maskType": mask_type}
+    if subtype:
+        params["maskSubtype"] = subtype
+    return params
+
+
+@mask.command("create")
+@_mask_geometry_opts
+@json_input_options
+@click.pass_context
+def mask_create(ctx, mask_type, subtype, dry_run, **kwargs):
+    """Create a new mask on the active photo."""
+    execute_command(ctx, "develop.createNewMask", _mask_geometry_params(mask_type, subtype))
+
+
+@mask.command("ai")
+@click.option(
+    "--selection",
+    "selection_type",
+    type=click.Choice(["subject", "sky", "background", "objects", "people", "landscape"]),
+    default="subject",
+    help="AI selection type",
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def mask_ai(ctx, selection_type, dry_run, **kwargs):
+    """Create an AI selection mask (subject/sky/background/objects/people/landscape)."""
+    execute_command(ctx, "develop.createAISelectionMask", {"selectionType": selection_type})
+
+
+@mask.command("add")
+@_mask_geometry_opts
+@json_input_options
+@click.pass_context
+def mask_add(ctx, mask_type, subtype, dry_run, **kwargs):
+    """Add a component to the current mask (union)."""
+    execute_command(ctx, "develop.addToCurrentMask", _mask_geometry_params(mask_type, subtype))
+
+
+@mask.command("subtract")
+@_mask_geometry_opts
+@json_input_options
+@click.pass_context
+def mask_subtract(ctx, mask_type, subtype, dry_run, **kwargs):
+    """Subtract a component from the current mask."""
+    execute_command(ctx, "develop.subtractFromCurrentMask", _mask_geometry_params(mask_type, subtype))
+
+
+@mask.command("intersect")
+@_mask_geometry_opts
+@json_input_options
+@click.pass_context
+def mask_intersect(ctx, mask_type, subtype, dry_run, **kwargs):
+    """Intersect a component with the current mask."""
+    execute_command(ctx, "develop.intersectWithCurrentMask", _mask_geometry_params(mask_type, subtype))
+
+
+# NOTE: develop.invertMask / develop.deleteMask require a maskId, but createNewMask doesn't return a
+# usable one (live smoke 2026-06-20: MISSING_MASK_ID). Until a maskId source exists they'd be dead
+# commands, so they stay unexposed (orphan-allowlisted). v2: have create return an id / target current.
+
+
+@mask.command("activate")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def mask_activate(ctx, dry_run, **kwargs):
+    """Switch the develop module into masking mode."""
+    execute_command(ctx, "develop.activateMaskingMode", {})
+
+
 @develop.command("auto-tone")
 @click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
 @json_input_options
@@ -338,13 +424,7 @@ def curve_remove_point(ctx, index, channel, dry_run, **kwargs):
     )
 
 
-# --- Masking commands ---
-
-
-@develop.group()
-def mask():
-    """Masking commands"""
-    pass
+# --- Masking commands (view/query; geometry ops are defined with the `mask` group above) ---
 
 
 @mask.command("list")

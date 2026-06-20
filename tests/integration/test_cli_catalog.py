@@ -208,3 +208,16 @@ def test_catalog_save_metadata(mock_get_bridge, runner):
     mock_bridge.send_command.assert_called_once_with(
         "catalog.saveMetadata", {"photoIds": ["1", "2"]}, timeout=120.0
     )
+
+
+@patch("cli.helpers.get_bridge")
+def test_catalog_import(mock_get_bridge, runner):
+    """lr catalog import sends file paths to catalog.importPhotos."""
+    mock_bridge = AsyncMock()
+    mock_bridge.send_command.return_value = {"id": "x", "success": True, "result": {}}
+    mock_get_bridge.return_value = mock_bridge
+    result = runner.invoke(cli, ["catalog", "import", "C:/a.jpg", "C:/b.jpg"])
+    assert result.exit_code == 0
+    mock_bridge.send_command.assert_called_once_with(
+        "catalog.importPhotos", {"paths": ["C:/a.jpg", "C:/b.jpg"]}, timeout=120.0
+    )

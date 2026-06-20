@@ -3,12 +3,12 @@
 > Generated from `lightroom_sdk/schema.py` via `lr docs reference`. Do not edit by hand --
 > regenerate after any schema change.
 
-**135 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
+**142 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
 
 ## Groups
 
-- [`catalog`](#catalog) -- 36 commands
-- [`develop`](#develop) -- 65 commands
+- [`catalog`](#catalog) -- 37 commands
+- [`develop`](#develop) -- 71 commands
 - [`export`](#export) -- 1 commands
 - [`plugin`](#plugin) -- 3 commands
 - [`preview`](#preview) -- 3 commands
@@ -244,6 +244,18 @@ Get current view filter
 _No parameters._
 
 **Response fields:** `filter`
+
+### `lr catalog import`
+
+Add existing files to the catalog (catalog:addPhoto; files are referenced in place, not copied)
+
+**MCP tool:** `lr_catalog_import_photos`  -  **bridge:** `catalog.importPhotos`  -  **risk:** write  -  **timeout:** 120s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `paths` | json_array | yes |  | Absolute file paths to add to the catalog |
+
+**Response fields:** `total`, `imported`, `failed`, `results`
 
 ### `lr catalog keywords`
 
@@ -886,6 +898,54 @@ Set a local adjustment parameter value
 | `value` | float | yes |  | Parameter value |
 | `maskId` | string |  |  | Mask ID to select before setting value |
 
+### `lr develop mask activate`
+
+Switch the develop module into masking mode
+
+**MCP tool:** `lr_develop_activate_masking_mode`  -  **bridge:** `develop.activateMaskingMode`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
+
+_No parameters._
+
+**Response fields:** `message`
+
+### `lr develop mask add`
+
+Add a component to the current mask (union)
+
+**MCP tool:** `lr_develop_add_to_current_mask`  -  **bridge:** `develop.addToCurrentMask`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `maskType` | string |  | `brush` | Mask type |
+| `maskSubtype` | string |  |  | Mask subtype |
+
+**Response fields:** `message`
+
+### `lr develop mask ai`
+
+Create an AI selection mask
+
+**MCP tool:** `lr_develop_create_ai_selection_mask`  -  **bridge:** `develop.createAISelectionMask`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `selectionType` | enum |  | `subject` | AI selection type (one of: subject, sky, background, objects, people, landscape) |
+
+**Response fields:** `maskId`, `maskType`, `message`
+
+### `lr develop mask create`
+
+Create a new mask on the active photo
+
+**MCP tool:** `lr_develop_create_new_mask`  -  **bridge:** `develop.createNewMask`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `maskType` | string |  | `brush` | Mask type (brush, linearGradient, radialGradient, rangeMask, ...) |
+| `maskSubtype` | string |  |  | Mask subtype (type-specific) |
+
+**Response fields:** `maskId`, `maskType`, `message`
+
 ### `lr develop mask go-to`
 
 Go to masking view
@@ -895,6 +955,19 @@ Go to masking view
 _No parameters._
 
 **Response fields:** `status`
+
+### `lr develop mask intersect`
+
+Intersect a component with the current mask
+
+**MCP tool:** `lr_develop_intersect_with_current_mask`  -  **bridge:** `develop.intersectWithCurrentMask`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `maskType` | string |  | `brush` | Mask type |
+| `maskSubtype` | string |  |  | Mask subtype |
+
+**Response fields:** `message`
 
 ### `lr develop mask list`
 
@@ -915,6 +988,19 @@ Get selected mask
 _No parameters._
 
 **Response fields:** `mask`
+
+### `lr develop mask subtract`
+
+Subtract a component from the current mask
+
+**MCP tool:** `lr_develop_subtract_from_current_mask`  -  **bridge:** `develop.subtractFromCurrentMask`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `maskType` | string |  | `brush` | Mask type |
+| `maskSubtype` | string |  |  | Mask subtype |
+
+**Response fields:** `message`
 
 ### `lr develop mask toggle-overlay`
 

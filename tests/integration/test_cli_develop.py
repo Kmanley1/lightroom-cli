@@ -51,6 +51,32 @@ def test_develop_batch_apply_requires_settings(runner):
 
 
 @patch("cli.helpers.get_bridge")
+def test_develop_mask_create(mock_get_bridge, runner):
+    """lr develop mask create sends maskType to develop.createNewMask."""
+    mock_bridge = AsyncMock()
+    mock_bridge.send_command.return_value = {"id": "x", "success": True, "result": {}}
+    mock_get_bridge.return_value = mock_bridge
+    result = runner.invoke(cli, ["develop", "mask", "create", "--type", "radialGradient"])
+    assert result.exit_code == 0
+    mock_bridge.send_command.assert_called_once_with(
+        "develop.createNewMask", {"maskType": "radialGradient"}, timeout=30.0
+    )
+
+
+@patch("cli.helpers.get_bridge")
+def test_develop_mask_ai(mock_get_bridge, runner):
+    """lr develop mask ai sends selectionType to develop.createAISelectionMask."""
+    mock_bridge = AsyncMock()
+    mock_bridge.send_command.return_value = {"id": "x", "success": True, "result": {}}
+    mock_get_bridge.return_value = mock_bridge
+    result = runner.invoke(cli, ["develop", "mask", "ai", "--selection", "sky"])
+    assert result.exit_code == 0
+    mock_bridge.send_command.assert_called_once_with(
+        "develop.createAISelectionMask", {"selectionType": "sky"}, timeout=30.0
+    )
+
+
+@patch("cli.helpers.get_bridge")
 def test_develop_set_single_param(mock_get_bridge, runner):
     """lr develop set Exposure 1.5 が単一パラメータを設定する"""
     mock_bridge = AsyncMock()

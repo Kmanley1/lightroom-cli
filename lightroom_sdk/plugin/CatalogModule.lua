@@ -1439,6 +1439,63 @@ function CatalogModule.saveMetadata(params, callback)
     }))
 end
 
+-- Import (add) existing files into the catalog via catalog:addPhoto. Paths must exist on disk; files
+-- are referenced in place (not copied). Per-path partial success; new photo ids are read AFTER the
+-- write txn (same SDK restriction as createCollection: can't read a just-added photo in the same txn).
+function CatalogModule.importPhotos(params, callback)
+    ensureLrModules()
+    params = params or {}
+    local paths = params.paths
+    if type(paths) ~= "table" or #paths == 0 then
+        callback(ErrorUtils.createError("INVALID_PARAM_VALUE", "paths must be a non-empty array"))
+        return
+    end
+
+    local catalog = LrApplication.activeCatalog()
+    local results, imported, failed = {}, 0, 0
+    local addedPhotos = {}  -- resultIndex -> LrPhoto (ids read after the write commits)
+
+    local writeOk, writeErr = ErrorUtils.safeCall(function()
+        catalog:withWriteAccessDo("Import Photos", function()
+            for _, path in ipairs(paths) do
+                local p = tostring(path)
+                if not LrFileUtils.exists(p) then
+                    failed = failed + 1
+                    table.insert(results, { path = p, success = false, error = "File not found" })
+                else
+                    local ok, photoOrErr = ErrorUtils.safeCall(function()
+                        return catalog:addPhoto(p)  -- [SDK-VERIFY]
+                    end)
+                    if ok and photoOrErr then
+                        imported = imported + 1
+                        table.insert(results, { path = p, success = true })
+                        addedPhotos[#results] = photoOrErr
+                    else
+                        failed = failed + 1
+                        table.insert(results, { path = p, success = false, error = tostring(photoOrErr) })
+                    end
+                end
+            end
+        end, { timeout = 60 })
+    end)
+    if not writeOk then
+        callback(ErrorUtils.createError("OPERATION_FAILED", "Import failed: " .. tostring(writeErr)))
+        return
+    end
+
+    -- Read new photo ids AFTER the write txn commits (best-effort; degrade to no id on failure)
+    ErrorUtils.safeCall(function()
+        catalog:withReadAccessDo(function()
+            for idx, photo in pairs(addedPhotos) do
+                local ok, id = ErrorUtils.safeCall(function() return photo.localIdentifier end)
+                if ok and id and results[idx] then results[idx].photoId = tostring(id) end
+            end
+        end)
+    end)
+
+    callback(ErrorUtils.createSuccess({ total = #results, imported = imported, failed = failed, results = results }))
+end
+
 -- Set photo flag (pick/reject/none)
 function CatalogModule.setFlag(params, callback)
     ensureLrModules()

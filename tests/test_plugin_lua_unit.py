@@ -812,3 +812,25 @@ class TestTextFilterKnown:
     def test_unknown_still_flagged(self):
         rt, module = self._module()
         assert module["_unknownFilterKeys"](rt.table_from({"bogus": "x"})) is not None
+
+
+class TestImportPhotosGuard:
+    """importPhotos rejects empty/missing paths before any catalog write."""
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    def test_empty_paths_errors(self, cat):
+        rt, module = cat
+        captured = []
+        module["importPhotos"](rt.eval("{ paths = {} }"), lambda r: captured.append(r))
+        assert captured[0]["error"]["code"] == "INVALID_PARAM_VALUE"
+
+    def test_missing_paths_errors(self, cat):
+        rt, module = cat
+        captured = []
+        module["importPhotos"](rt.table_from({}), lambda r: captured.append(r))
+        assert captured[0]["error"]["code"] == "INVALID_PARAM_VALUE"

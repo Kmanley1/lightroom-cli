@@ -67,20 +67,18 @@ SCHEMA_WITHOUT_HANDLER_OK = set(_AI_TOOL_REWRITE) | MCP_LOCAL_COMMANDS
 # absent from ``lr docs reference``. Either add a schema (to expose it) or drop the registration.
 # These are the masking/selection-internal verbs plus preview.getPreviewChunk; verified absent
 # from both COMMAND_SCHEMAS and every cli_path on 2026-06-20.
+# 2026-06-20: 6 mask-creation/combination handlers (create/ai/add/subtract/intersect/activate) now
+# have schemas + a `develop mask` CLI subgroup. invertMask/deleteMask stay orphaned: they require a
+# maskId that createNewMask doesn't return (live smoke -> MISSING_MASK_ID), so exposing them would
+# ship dead commands. The rest are niche UI/tool-state handlers + the internal preview-chunk streamer.
 ORPHAN_LUA_HANDLERS_ALLOWLIST = {
-    "develop.activateMaskingMode",
-    "develop.addToCurrentMask",
-    "develop.createAISelectionMask",
     "develop.createComplexMask",
-    "develop.createNewMask",
     "develop.deleteMask",
     "develop.deleteMaskTool",
     "develop.getSelectedMaskTool",
-    "develop.intersectWithCurrentMask",
     "develop.invertMask",
     "develop.selectMask",
     "develop.selectMaskTool",
-    "develop.subtractFromCurrentMask",
     "preview.getPreviewChunk",
 }
 
