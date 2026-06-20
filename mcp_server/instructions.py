@@ -7,7 +7,7 @@ INSTRUCTIONS = """\
 # Lightroom CLI - MCP Server Guide
 
 You are interacting with Adobe Lightroom Classic through MCP tools.
-All tool names use the `lr_` prefix with snake_case (e.g., `lr_system_ping`, `lr_catalog_list`).
+All tool names use the `lr_` prefix with snake_case (e.g., `lr_system_ping`, `lr_catalog_get_all_photos`).
 
 ## Getting Started
 
@@ -28,17 +28,17 @@ All tool names use the `lr_` prefix with snake_case (e.g., `lr_system_ping`, `lr
 ## Key Workflows
 
 ### Browse and Select Photos
-1. `lr_catalog_list` - List photos in the current view
+1. `lr_catalog_get_all_photos` - List photos in the current view
 2. `lr_catalog_search_photos` - Search by keyword
-3. `lr_catalog_get_selected` - Get currently selected photos
+3. `lr_catalog_get_selected_photos` - Get currently selected photos
 4. `lr_catalog_set_selected_photos` - Select specific photos by ID
 
 ### Develop / Edit
 1. `lr_develop_get_settings` - Get current develop settings
 2. `lr_develop_set_value` - Set a single develop parameter (e.g., Exposure, Contrast)
 3. `lr_develop_apply_settings` - Apply multiple settings at once
-4. `lr_develop_auto_tone` - Apply auto tone
-5. `lr_develop_reset_all` - Reset all develop settings (destructive)
+4. `lr_develop_set_auto_tone` - Apply auto tone
+5. `lr_develop_reset_all_develop_adjustments` - Reset all develop settings (destructive)
 
 ### AI Masks
 1. `lr_develop_create_ai_mask_with_adjustments` - Create AI mask (subject, sky, background, etc.)
@@ -60,11 +60,11 @@ All tool names use the `lr_` prefix with snake_case (e.g., `lr_system_ping`, `lr
 ## Parameter Discovery
 
 Tool descriptions include parameter types and constraints. For detailed parameter info,
-use `lr_schema_get_command_detail` if available, or refer to the tool's parameter schema.
+refer to each tool's parameter schema (every tool exposes typed, described parameters).
 
 ## Tips
 
-- Use `lr_catalog_get_selected` to get photo IDs before operating on specific photos.
+- Use `lr_catalog_get_selected_photos` to get photo IDs before operating on specific photos.
 - Most develop commands operate on the currently selected photo.
 - Batch operations accept `photoIds` arrays or `allSelected=true`.
 - Preview generation (`lr_preview_*`) can take up to 120 seconds.

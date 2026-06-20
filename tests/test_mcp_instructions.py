@@ -42,3 +42,23 @@ def test_instructions_mentions_dry_run():
     from mcp_server.instructions import INSTRUCTIONS
 
     assert "dry_run" in INSTRUCTIONS
+
+
+def test_all_referenced_tool_names_are_real():
+    """Every concrete `lr_*` tool name in the guide must be a registered MCP tool.
+
+    Guards against drift: the guide previously named CLI-style tools (e.g. lr_catalog_list)
+    that don't exist as MCP tools -- the real name derives from the command
+    (catalog.getAllPhotos -> lr_catalog_get_all_photos).
+    """
+    import re
+
+    from lightroom_sdk.schema import COMMAND_SCHEMAS
+    from mcp_server.instructions import INSTRUCTIONS
+    from mcp_server.tool_registry import sanitize_tool_name
+
+    valid = {sanitize_tool_name(c) for c in COMMAND_SCHEMAS if not c.startswith("plugin.")}
+    # Backtick-wrapped names ending in a letter; the `lr_preview_*` wildcard ends in '*' and is skipped.
+    referenced = set(re.findall(r"`(lr_[a-z_]+[a-z])`", INSTRUCTIONS))
+    missing = sorted(n for n in referenced if n not in valid)
+    assert not missing, f"INSTRUCTIONS reference non-existent MCP tools: {missing}"
