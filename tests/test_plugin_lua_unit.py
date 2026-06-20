@@ -490,3 +490,41 @@ class TestCollectKeywordsMatching:
         assert list(module["_collectKeywordsMatching"](None, "x").values()) == []
         rt.execute(self._KW)
         assert list(module["_collectKeywordsMatching"](rt.eval("tree"), None).values()) == []
+
+
+class TestSetMetadataAlwaysResponds:
+    """setMetadata must always call back exactly once -- no silent hang on write-access failure.
+
+    The old code put the callback INSIDE catalog:withWriteAccessDo with no safeCall, so a write
+    that never ran the closure (lock timeout) sent no response and the client hung to its own
+    timeout. The fix mirrors removeKeyword: capture result/error in outer locals, wrap
+    withWriteAccessDo in safeCall, and call back exactly once afterward.
+    """
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    def _call(self, cat, params):
+        rt, module = cat
+        captured = []
+        module["setMetadata"](rt.table_from(params), lambda r: captured.append(r))
+        return captured
+
+    def test_missing_photo_id_responds_once(self, cat):
+        captured = self._call(cat, {"key": "title", "value": "x"})
+        assert len(captured) == 1
+        assert captured[0]["error"]["code"] == "MISSING_PARAM"
+
+    def test_missing_key_responds_once(self, cat):
+        captured = self._call(cat, {"photoId": 123, "value": "x"})
+        assert len(captured) == 1
+        assert captured[0]["error"]["code"] == "MISSING_PARAM"
+
+    def test_valid_params_respond_exactly_once(self, cat):
+        # Anti-hang: even when the stubbed write transaction can't really run, setMetadata must
+        # respond exactly once (the OLD callback-inside-withWriteAccessDo path called back 0 times).
+        captured = self._call(cat, {"photoId": 123, "key": "title", "value": "x"})
+        assert len(captured) == 1

@@ -1626,21 +1626,31 @@ function CatalogModule.setMetadata(params, callback)
     end
 
     local catalog = LrApplication.activeCatalog()
-    catalog:withWriteAccessDo("Set Metadata", function()
-        local photo = catalog:getPhotoByLocalId(tonumber(photoId))
-        if not photo then
-            callback(ErrorUtils.createError("PHOTO_NOT_FOUND", "Photo with ID " .. photoId .. " not found"))
-            return
-        end
-        local success, err = ErrorUtils.safeCall(function()
+    -- Mirror the removeKeyword template: capture result/error in outer locals, wrap
+    -- withWriteAccessDo in safeCall, and call back exactly once afterward. The old code
+    -- invoked the callback INSIDE withWriteAccessDo with no safeCall, so a write-access
+    -- timeout sent no response and the client hung to its own timeout.
+    local opResult = nil
+    local opError = nil
+    local writeSuccess, writeErr = ErrorUtils.safeCall(function()
+        catalog:withWriteAccessDo("Set Metadata", function()
+            local photo = catalog:getPhotoByLocalId(tonumber(photoId))
+            if not photo then
+                opError = { code = "PHOTO_NOT_FOUND", message = "Photo with ID " .. tostring(photoId) .. " not found" }
+                return
+            end
             photo:setRawMetadata(key, value)
-        end)
-        if success then
-            callback(ErrorUtils.createSuccess({ photoId = photoId, key = key, value = value, message = "Metadata set" }))
-        else
-            callback(ErrorUtils.createError("OPERATION_FAILED", "Failed to set metadata: " .. tostring(err)))
-        end
-    end, { timeout = 10 })
+            opResult = { photoId = photoId, key = key, value = value, message = "Metadata set" }
+        end, { timeout = 10 })
+    end)
+
+    if opError then
+        callback(ErrorUtils.createError(opError.code, opError.message))
+    elseif writeSuccess and opResult then
+        callback(ErrorUtils.createSuccess(opResult))
+    else
+        callback(ErrorUtils.createError("OPERATION_FAILED", "Failed to set metadata: " .. tostring(writeErr)))
+    end
 end
 
 function CatalogModule.createCollection(params, callback)
