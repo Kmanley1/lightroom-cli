@@ -121,3 +121,111 @@ async def test_readonly_command_retried_after_reconnect(mock_lr_server):
     result = await cm.execute("system.ping", {}, timeout=5.0, mutating=False)
     assert result.get("isError") is not True or result.get("code") == "CONNECTION_ERROR"
     await cm.shutdown()
+
+
+# --- #110: the develop.ai.* / system.* MCP tools must route, not return UNKNOWN_COMMAND ---
+
+
+@pytest.mark.asyncio
+async def test_ai_subject_routes_to_create_ai_mask(mock_lr_server):
+    """develop.ai.subject -> develop.createAIMaskWithAdjustments(selectionType=subject)."""
+    # Only the REAL command is registered; the mock returns {} for anything else, so a
+    # distinctive payload proves the rewrite (and that selectionType was injected -> validates).
+    mock_lr_server.register_response("develop.createAIMaskWithAdjustments", {"maskId": 1})
+    cm = ConnectionManager(port_file=str(mock_lr_server.port_file))
+    result = await cm.execute("develop.ai.subject", {}, timeout=5.0, mutating=True)
+    assert result.get("isError") is not True, result
+    assert result["result"].get("maskId") == 1
+    await cm.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ai_people_passes_part(mock_lr_server):
+    """develop.ai.people forwards --part and injects selectionType."""
+    mock_lr_server.register_response("develop.createAIMaskWithAdjustments", {"maskId": 2})
+    cm = ConnectionManager(port_file=str(mock_lr_server.port_file))
+    result = await cm.execute("develop.ai.people", {"part": "eyes"}, timeout=5.0, mutating=True)
+    assert result.get("isError") is not True, result
+    assert result["result"].get("maskId") == 2
+    await cm.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ai_list_routes_to_get_all_masks(mock_lr_server):
+    mock_lr_server.register_response("develop.getAllMasks", {"masks": [{"id": 1}]})
+    cm = ConnectionManager(port_file=str(mock_lr_server.port_file))
+    result = await cm.execute("develop.ai.list", {}, timeout=5.0, mutating=False)
+    assert result["result"]["masks"] == [{"id": 1}]
+    await cm.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ai_reset_routes_to_reset_masking(mock_lr_server):
+    mock_lr_server.register_response("develop.resetMasking", {"reset": True})
+    cm = ConnectionManager(port_file=str(mock_lr_server.port_file))
+    result = await cm.execute("develop.ai.reset", {}, timeout=5.0, mutating=True)
+    assert result["result"]["reset"] is True
+    await cm.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_ai_presets_serviced_locally():
+    """develop.ai.presets returns presets WITHOUT a bridge round-trip (no port file needed)."""
+    import tempfile as _tf
+
+    cm = ConnectionManager(port_file=str(Path(_tf.gettempdir()) / "nonexistent_presets_test.txt"))
+    result = await cm.execute("develop.ai.presets", {}, timeout=5.0, mutating=False)
+    assert result.get("isError") is not True, result
+    assert "presets" in result["result"]
+    await cm.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_check_connection_ok(mock_lr_server):
+    mock_lr_server.register_response("system.ping", {"status": "ok"})
+    cm = ConnectionManager(port_file=str(mock_lr_server.port_file))
+    result = await cm.execute("system.checkConnection", {}, timeout=5.0, mutating=False)
+    assert result["result"]["status"] == "ok"
+    assert result["result"]["connected"] is True
+    await cm.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_check_connection_unavailable():
+    import tempfile as _tf
+
+    cm = ConnectionManager(port_file=str(Path(_tf.gettempdir()) / "nonexistent_check_test.txt"))
+    result = await cm.execute("system.checkConnection", {}, timeout=2.0, mutating=False)
+    assert result["result"]["status"] == "unavailable"
+    assert result["result"]["connected"] is False
+    await cm.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_serviced_locally(mock_lr_server):
+    mock_lr_server.register_response("system.ping", {"status": "ok"})
+    cm = ConnectionManager(port_file=str(mock_lr_server.port_file))
+    await cm.execute("system.ping", {}, timeout=5.0, mutating=False)
+    result = await cm.execute("system.reconnect", {}, timeout=5.0, mutating=False)
+    assert result.get("isError") is not True, result
+    assert result["result"]["status"] == "reconnected"
+    await cm.shutdown()
+
+
+def test_no_advertised_mcp_tool_is_dead():
+    """#110 guard: every advertised MCP tool must be serviceable -- a plugin handler, an
+    _AI_TOOL_REWRITE entry, or an explicit MCP-local handler -- never UNKNOWN_COMMAND."""
+    import re
+
+    from lightroom_sdk.schema import COMMAND_SCHEMAS
+    from mcp_server.connection import _AI_TOOL_REWRITE
+
+    plugin_dir = Path(__file__).resolve().parent.parent / "lightroom_sdk" / "plugin"
+    handled: set[str] = set()
+    for f in plugin_dir.glob("*.lua"):
+        handled |= set(re.findall(r'router:register\(\s*"([^"]+)"', f.read_text(encoding="utf-8")))
+    local = {"develop.ai.presets", "system.checkConnection", "system.reconnect"}
+    serviceable = handled | set(_AI_TOOL_REWRITE) | local
+    advertised = {c for c in COMMAND_SCHEMAS if not c.startswith("plugin.")}
+    dead = sorted(advertised - serviceable)
+    assert not dead, f"Advertised MCP tools with no handler/rewrite (dead on arrival): {dead}"
