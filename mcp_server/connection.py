@@ -26,7 +26,6 @@ class ConnectionManager:
         self._port_file = port_file
         self._client = None
         self._lock = asyncio.Lock()
-        self._reconnected = False
 
     async def execute(
         self,
@@ -49,18 +48,7 @@ class ConnectionManager:
                 "suggestions": e.suggestions if hasattr(e, "suggestions") else [],
             }
 
-        # 2. C1: mutating コマンドの再接続後チェック
-        if mutating and self._reconnected:
-            self._reconnected = False
-            return {
-                "isError": True,
-                "code": "MUTATING_NOT_RETRIED",
-                "message": (
-                    "接続が切断されたため、mutating コマンドは安全のため再送されませんでした。再度実行してください。"
-                ),
-            }
-
-        # 3. Execute with lock (asyncio.wait_for for Python 3.10 compatibility)
+        # 2. Execute with lock (asyncio.wait_for for Python 3.10 compatibility)
         try:
 
             async def _execute():
@@ -74,7 +62,7 @@ class ConnectionManager:
             logger.warning(f"Connection error on '{command}': {e}")
             self._client = None
             if mutating:
-                # mutating コマンドは再送しない。_reconnected はセットしない（次回は新規接続扱い）
+                # An in-flight mutating command must not be auto-resent (it may have landed).
                 return {
                     "isError": True,
                     "code": "MUTATING_NOT_RETRIED",
@@ -83,7 +71,6 @@ class ConnectionManager:
                         "再度実行してください。"
                     ),
                 }
-            self._reconnected = True
             return {
                 "isError": True,
                 "code": "CONNECTION_ERROR",
@@ -114,7 +101,6 @@ class ConnectionManager:
                             "再度実行してください。"
                         ),
                     }
-                self._reconnected = True
                 return {
                     "isError": True,
                     "code": "CONNECTION_ERROR",

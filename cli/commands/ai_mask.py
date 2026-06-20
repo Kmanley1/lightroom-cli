@@ -64,7 +64,8 @@ def _make_ai_type_command(selection_type: str, has_part: bool = False, part_choi
         adjustments = _resolve_adjustments(adjust, adjust_preset)
         if isinstance(adjustments, str):
             # Error message
-            click.echo(OutputFormatter.format_error(adjustments))
+            fmt = ctx.obj.get("output", "text") if ctx.obj else "text"
+            click.echo(OutputFormatter.format_error(adjustments, fmt, code="VALIDATION_ERROR"))
             return
         if adjustments:
             cmd_params["adjustments"] = adjustments
@@ -201,7 +202,8 @@ def ai_batch(
 ):
     """Apply AI mask to multiple photos"""
     if not photos and not all_selected:
-        click.echo(OutputFormatter.format_error("Specify --photos or --all-selected"))
+        fmt = ctx.obj.get("output", "text") if ctx.obj else "text"
+        click.echo(OutputFormatter.format_error("Specify --photos or --all-selected", fmt, code="VALIDATION_ERROR"))
         return
 
     if dry_run:
@@ -212,7 +214,8 @@ def ai_batch(
     # Resolve adjustments
     adjustments = _resolve_adjustments(adjust, adjust_preset)
     if isinstance(adjustments, str):
-        click.echo(OutputFormatter.format_error(adjustments))
+        fmt = ctx.obj.get("output", "text") if ctx.obj else "text"
+        click.echo(OutputFormatter.format_error(adjustments, fmt, code="VALIDATION_ERROR"))
         return
 
     cmd_params: dict = {

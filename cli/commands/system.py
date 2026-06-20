@@ -59,7 +59,7 @@ def reconnect(ctx):
             await bridge.connect()
             await bridge.disconnect()
             await bridge.connect()
-            click.echo("Reconnected")
+            click.echo(OutputFormatter.format({"status": "reconnected"}, fmt))
         except Exception as e:
             handle_error(ctx, e, fmt)
         finally:

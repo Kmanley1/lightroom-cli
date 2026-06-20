@@ -82,15 +82,21 @@ async def test_mutating_not_retried_after_reconnect():
 
 
 @pytest.mark.asyncio
-async def test_mutating_flag_prevents_retry_explicitly(mock_lr_server):
-    """C1: mutating=True で再接続が発生した場合、再送せずにエラー返却"""
+async def test_read_failure_does_not_block_next_mutating(mock_lr_server):
+    """#126: a read-only failure must NOT pre-emptively block a later, fresh mutating command.
+
+    Previously a non-mutating connection failure set a `_reconnected` flag that made the next
+    mutating command return MUTATING_NOT_RETRIED spuriously, even though a fresh mutating command
+    on a new connection is safe. The in-flight protection (a mutating command that itself fails ->
+    MUTATING_NOT_RETRIED) is unchanged (see test_mutating_not_retried_after_reconnect).
+    """
     cm = ConnectionManager(port_file=str(mock_lr_server.port_file))
 
     mock_lr_server.register_response("system.ping", {"status": "ok"})
+    mock_lr_server.register_response("develop.setValue", {"parameter": "Exposure", "value": 0.5})
     await cm.execute("system.ping", {}, timeout=5.0, mutating=False)
 
-    cm._client = None
-    cm._reconnected = True
+    cm._client = None  # as a read-failure path leaves it
 
     result = await cm.execute(
         "develop.setValue",
@@ -98,8 +104,8 @@ async def test_mutating_flag_prevents_retry_explicitly(mock_lr_server):
         timeout=5.0,
         mutating=True,
     )
-    assert result["isError"] is True
-    assert result["code"] == "MUTATING_NOT_RETRIED"
+    assert result.get("code") != "MUTATING_NOT_RETRIED", result
+    assert result.get("isError") is not True, result
     await cm.shutdown()
 
 
@@ -111,7 +117,6 @@ async def test_readonly_command_retried_after_reconnect(mock_lr_server):
     cm = ConnectionManager(port_file=str(mock_lr_server.port_file))
     await cm.execute("system.ping", {}, timeout=5.0, mutating=False)
     cm._client = None
-    cm._reconnected = True
 
     result = await cm.execute("system.ping", {}, timeout=5.0, mutating=False)
     assert result.get("isError") is not True or result.get("code") == "CONNECTION_ERROR"

@@ -351,7 +351,8 @@ def create_smart_collection(ctx, name, search_desc, dry_run, **kwargs):
         try:
             params["searchDesc"] = json.loads(search_desc)
         except json.JSONDecodeError as e:
-            click.echo(OutputFormatter.format_error(f"Invalid JSON for --search-desc: {e}"))
+            fmt = ctx.obj.get("output", "text") if ctx.obj else "text"
+            click.echo(OutputFormatter.format_error(f"Invalid JSON for --search-desc: {e}", fmt, code="VALIDATION_ERROR"))
             ctx.exit(1)
             return
     execute_command(ctx, "catalog.createSmartCollection", params)
@@ -398,7 +399,8 @@ def set_view_filter(ctx, filter_json, dry_run, **kwargs):
     try:
         filter_data = json.loads(filter_json)
     except json.JSONDecodeError as e:
-        click.echo(OutputFormatter.format_error(f"Invalid JSON for --filter: {e}"))
+        fmt = ctx.obj.get("output", "text") if ctx.obj else "text"
+        click.echo(OutputFormatter.format_error(f"Invalid JSON for --filter: {e}", fmt, code="VALIDATION_ERROR"))
         ctx.exit(1)
         return
     execute_command(ctx, "catalog.setViewFilter", {"filter": filter_data})
