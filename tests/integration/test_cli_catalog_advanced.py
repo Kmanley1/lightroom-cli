@@ -23,7 +23,7 @@ def test_catalog_create_collection(mock_get_bridge, runner):
     result = runner.invoke(cli, ["catalog", "create-collection", "My Collection"])
     assert result.exit_code == 0
     mock_bridge.send_command.assert_called_once_with(
-        "catalog.createCollection", {"name": "My Collection"}, timeout=30.0
+        "catalog.createCollection", {"name": "My Collection", "returnExisting": True}, timeout=30.0
     )
 
 

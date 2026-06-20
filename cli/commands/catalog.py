@@ -332,12 +332,53 @@ def set_metadata(ctx, photo_id, key, value, dry_run, **kwargs):
 
 @catalog.command("create-collection")
 @click.argument("name")
+@click.option("--parent", type=int, default=None, help="Parent collection-set ID to nest the new collection under")
+@click.option(
+    "--return-existing/--no-return-existing",
+    default=True,
+    help="Return the existing collection if one with this name already exists",
+)
 @click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
 @json_input_options
 @click.pass_context
-def create_collection(ctx, name, dry_run, **kwargs):
-    """Create a new collection"""
-    execute_command(ctx, "catalog.createCollection", {"name": name})
+def create_collection(ctx, name, parent, return_existing, dry_run, **kwargs):
+    """Create a new collection (returns the new collection id)"""
+    params = {"name": name, "returnExisting": return_existing}
+    if parent is not None:
+        params["parentId"] = parent
+    execute_command(ctx, "catalog.createCollection", params)
+
+
+@catalog.command("add-to-collection")
+@click.argument("collection_id", type=int)
+@click.argument("photo_ids", nargs=-1, required=True)
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def add_to_collection(ctx, collection_id, photo_ids, dry_run, **kwargs):
+    """Add photos to a collection by ID"""
+    execute_command(
+        ctx,
+        "catalog.addPhotosToCollection",
+        {"collectionId": collection_id, "photoIds": list(photo_ids)},
+        timeout=60.0,
+    )
+
+
+@catalog.command("remove-from-collection")
+@click.argument("collection_id", type=int)
+@click.argument("photo_ids", nargs=-1, required=True)
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def remove_from_collection(ctx, collection_id, photo_ids, dry_run, **kwargs):
+    """Remove photos from a collection by ID (does not delete the photos)"""
+    execute_command(
+        ctx,
+        "catalog.removePhotosFromCollection",
+        {"collectionId": collection_id, "photoIds": list(photo_ids)},
+        timeout=60.0,
+    )
 
 
 @catalog.command("create-smart-collection")

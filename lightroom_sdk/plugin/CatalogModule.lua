@@ -7,6 +7,9 @@ local LrApplication = nil
 local LrTasks = import 'LrTasks'
 local LrDate = nil
 local LrProgressScope = nil
+local LrExportSession = nil
+local LrFileUtils = nil
+local LrPathUtils = nil
 
 -- Get ErrorUtils from global state (created in PluginInit.lua)
 local function getErrorUtils()
@@ -39,6 +42,15 @@ local function ensureLrModules()
         if success and dateModule then
             LrDate = dateModule
         end
+    end
+    if not LrFileUtils then
+        LrFileUtils = import 'LrFileUtils'
+    end
+    if not LrPathUtils then
+        LrPathUtils = import 'LrPathUtils'
+    end
+    if not LrExportSession then
+        LrExportSession = import 'LrExportSession'
     end
 end
 
@@ -1683,17 +1695,42 @@ function CatalogModule.createCollection(params, callback)
         callback(ErrorUtils.createError("MISSING_PARAM", "Collection name is required"))
         return
     end
+    local returnExisting = (params.returnExisting ~= false)  -- default true
     local catalog = LrApplication.activeCatalog()
+    local coll = nil
+    local opError = nil
     local success, err = ErrorUtils.safeCall(function()
         catalog:withWriteAccessDo("Create Collection", function()
-            catalog:createCollection(name, nil, true)
+            local parent = nil
+            if params.parentId then
+                parent = CatalogModule._findCollectionSetById(catalog, tonumber(params.parentId))
+                if not parent then
+                    opError = { code = "PHOTO_NOT_FOUND", message = "Parent collection set not found: " .. tostring(params.parentId) }
+                    return
+                end
+            end
+            coll = catalog:createCollection(name, parent, returnExisting)
         end, { timeout = 10 })
     end)
-    if success then
-        callback(ErrorUtils.createSuccess({ name = name, message = "Collection created" }))
-    else
-        callback(ErrorUtils.createError("OPERATION_FAILED", tostring(err)))
+    if opError then
+        callback(ErrorUtils.createError(opError.code, opError.message))
+        return
     end
+    if not success then
+        callback(ErrorUtils.createError("OPERATION_FAILED", tostring(err)))
+        return
+    end
+    -- Read the new collection's id AFTER the write txn commits. Reading a just-created collection's
+    -- info inside the same withWriteAccessDo is forbidden by the LrC SDK (live-smoke confirmed).
+    local collectionId = nil
+    if coll then
+        ErrorUtils.safeCall(function()
+            catalog:withReadAccessDo(function()
+                collectionId = coll.localIdentifier
+            end)
+        end)
+    end
+    callback(ErrorUtils.createSuccess({ id = collectionId, name = name, message = "Collection created" }))
 end
 
 function CatalogModule.createSmartCollection(params, callback)
@@ -1802,6 +1839,277 @@ function CatalogModule.removeKeyword(params, callback)
     else
         callback(ErrorUtils.createError("OPERATION_FAILED", tostring(writeErr)))
     end
+end
+
+-- Pure: find a collection by localIdentifier among all collections (incl. nested in sets). Unit-testable.
+function CatalogModule._findCollectionById(node, collectionId)
+    if collectionId == nil then return nil end
+    for _, c in ipairs(CatalogModule._collectAllCollections(node)) do
+        if c.localIdentifier == collectionId then return c end
+    end
+    return nil
+end
+
+-- Pure: recursively collect every collection SET (descending through nested sets). Unit-testable.
+function CatalogModule._collectAllCollectionSets(node)
+    local result = {}
+    if node == nil then return result end
+    local function visit(n)
+        if n.getChildCollectionSets then
+            for _, s in ipairs(n:getChildCollectionSets()) do
+                table.insert(result, s)
+                visit(s)
+            end
+        end
+    end
+    visit(node)
+    return result
+end
+
+-- Pure: find a collection SET by localIdentifier. Unit-testable.
+function CatalogModule._findCollectionSetById(node, setId)
+    if setId == nil then return nil end
+    for _, s in ipairs(CatalogModule._collectAllCollectionSets(node)) do
+        if s.localIdentifier == setId then return s end
+    end
+    return nil
+end
+
+-- Pure: map CLI params -> Lightroom LR_* export settings. Unit-testable (no SDK calls).
+-- ORIGINAL/DNG are passthrough/raw (no re-encode). Resize applies to raster formats; the JPEG quality
+-- knob applies to JPEG only. Gating on a raster allow-list (not "~= ORIGINAL") keeps DNG from getting
+-- jpeg_quality/resize it can't use. [SDK-VERIFY] every LR_* key against live LrC.
+function CatalogModule._buildExportSettings(params)
+    local format = params.format or "ORIGINAL"
+    local RASTER = { JPEG = true, TIFF = true, PNG = true, PSD = true }
+    local settings = {
+        LR_export_destinationType = "specificFolder",
+        LR_export_destinationPathPrefix = params.dest,
+        LR_export_useSubfolder = false,
+        LR_format = format,
+        LR_reimportExportedPhoto = false,  -- keep exports OUT of the catalog (auto-XMP pipeline)
+        LR_collisionHandling = params.overwrite or "rename",
+    }
+    if RASTER[format] then
+        if format == "JPEG" and params.quality ~= nil then
+            settings.LR_jpeg_quality = tonumber(params.quality) / 100  -- [SDK-VERIFY] 0..1 scale
+        end
+        if params.resizeLongEdge ~= nil then
+            settings.LR_size_doConstrain = true
+            settings.LR_size_resizeType = "longEdge"
+            settings.LR_size_maxHeight = tonumber(params.resizeLongEdge)
+            settings.LR_size_maxWidth = tonumber(params.resizeLongEdge)
+            settings.LR_size_units = "pixels"
+        else
+            settings.LR_size_doConstrain = false
+        end
+    end
+    return settings
+end
+
+-- Export photos to disk via LrExportSession. Default ORIGINAL passthrough; partial-success per photo.
+-- Single callback always reached. Photo resolution under read access; render loop polls shouldAbort.
+function CatalogModule.exportPhotos(params, callback)
+    ensureLrModules()
+    params = params or {}
+    local dest = params.dest
+    if not dest or dest == "" then
+        callback(ErrorUtils.createError("MISSING_PARAM", "dest is required"))
+        return
+    end
+    if not LrFileUtils.exists(dest) then  -- [SDK-VERIFY] fail-fast, no auto-mkdir
+        callback(ErrorUtils.createError("DEST_NOT_FOUND", "Destination folder not found: " .. tostring(dest)))
+        return
+    end
+
+    local catalog = LrApplication.activeCatalog()
+    local photos, notFound = {}, {}
+    local resolveOk, resolveErr = ErrorUtils.safeCall(function()
+        catalog:withReadAccessDo(function()
+            if params.photoIds and type(params.photoIds) == "table" and #params.photoIds > 0 then
+                for _, pid in ipairs(params.photoIds) do
+                    local p = catalog:getPhotoByLocalId(tonumber(pid))
+                    if p then table.insert(photos, p) else table.insert(notFound, tostring(pid)) end
+                end
+            else
+                -- Selection fallback via the shared filmstrip-guard helper: nil target photo =>
+                -- empty (never the whole filmstrip). Same guard as getSelectedPhotos.
+                photos = CatalogModule._resolveSelection(catalog:getTargetPhoto(), catalog:getTargetPhotos())
+            end
+        end)
+    end)
+    if not resolveOk then
+        callback(ErrorUtils.createError("OPERATION_FAILED", "Failed to resolve photos: " .. tostring(resolveErr)))
+        return
+    end
+    if #photos == 0 then
+        callback(ErrorUtils.createError("PHOTO_NOT_FOUND", "No photos to export (empty selection and no valid photoIds)"))
+        return
+    end
+
+    local exportSettings = CatalogModule._buildExportSettings(params)
+    local requestId = params._requestId
+    local command = params._command or "catalog.exportPhotos"
+    local router = getCommandRouter()
+    local continueOnError = params.continueOnError
+    if continueOnError == nil then continueOnError = true end
+
+    local results, exported, failed, incomplete = {}, 0, 0, false
+    local processed = {}
+    local renderOk, renderErr = ErrorUtils.safeCall(function()
+        local session = LrExportSession({  -- [SDK-VERIFY] constructor signature
+            photosToExport = photos,
+            exportSettings = exportSettings,
+        })
+        for _, rendition in session:renditions() do  -- [SDK-VERIFY] canonical LrExportSession iterator
+            if router and requestId and router:shouldAbort(requestId, command) then
+                incomplete = true
+                break
+            end
+            if rendition and rendition.photo then  -- defensive: skip a malformed rendition, don't crash the batch
+                local pid = tostring(rendition.photo.localIdentifier)
+                processed[pid] = true
+                local ok, pathOrMessage = rendition:waitForRender()  -- [SDK-VERIFY] (success, pathOrMessage)
+                if ok then
+                    exported = exported + 1
+                    table.insert(results, { photoId = pid, outputPath = pathOrMessage, success = true })
+                else
+                    failed = failed + 1
+                    table.insert(results, { photoId = pid, outputPath = nil, success = false, error = tostring(pathOrMessage) })
+                    if not continueOnError then incomplete = true; break end
+                end
+                LrTasks.yield()
+            end
+        end
+    end)
+    if not renderOk then
+        callback(ErrorUtils.createError("OPERATION_FAILED", "Export session failed: " .. tostring(renderErr)))
+        return
+    end
+
+    -- Resolved photos that were never rendered (aborted, stopped-on-error, or a malformed rendition) are
+    -- reported as failed rows so the accounting reflects every requested photo, not just the ones attempted.
+    for _, photo in ipairs(photos) do
+        local pid = tostring(photo.localIdentifier)
+        if not processed[pid] then
+            failed = failed + 1
+            table.insert(results, { photoId = pid, outputPath = nil, success = false,
+                error = incomplete and "Not rendered (export stopped early)" or "Not rendered" })
+        end
+    end
+
+    -- Photo IDs that never resolved to a catalog photo are reported as failed rows (honest count)
+    for _, pid in ipairs(notFound) do
+        failed = failed + 1
+        table.insert(results, { photoId = pid, outputPath = nil, success = false, error = "Photo not found" })
+    end
+
+    callback(ErrorUtils.createSuccess({
+        dest = dest,
+        format = params.format or "ORIGINAL",
+        results = results,
+        exported = exported,
+        failed = failed,
+        total = #results,
+        incomplete = incomplete,
+    }))
+end
+
+-- Shared core for add/remove collection membership. Mirrors removeKeyword's callback-once template.
+function CatalogModule._mutateCollectionMembership(params, callback, verb, actionName)
+    ensureLrModules()
+    params = params or {}
+    if params.collectionId == nil then
+        callback(ErrorUtils.createError("MISSING_PARAM", "collectionId is required"))
+        return
+    end
+    local collectionId = tonumber(params.collectionId)
+    if not collectionId then
+        callback(ErrorUtils.createError("INVALID_PARAM", "collectionId must be a number"))
+        return
+    end
+    local photoIds = params.photoIds
+    if type(photoIds) ~= "table" or #photoIds == 0 then
+        callback(ErrorUtils.createError("INVALID_PARAM_VALUE", "photoIds must be a non-empty array"))
+        return
+    end
+
+    local catalog = LrApplication.activeCatalog()
+    local collection, collectionName = nil, nil
+    local photos, notFound = {}, {}
+    local mutable = false
+
+    -- 1. Resolve the collection + photos under READ access. Resolving/reading collection info must NOT
+    -- share the withWriteAccessDo that mutates it -- the LrC SDK forbids same-txn read-after-write.
+    local resolveOk, resolveErr = ErrorUtils.safeCall(function()
+        catalog:withReadAccessDo(function()
+            collection = CatalogModule._findCollectionById(catalog, collectionId)
+            if collection then
+                collectionName = collection:getName()
+                mutable = type(collection.addPhotos) == "function" and type(collection.removePhotos) == "function"
+                for _, pid in ipairs(photoIds) do
+                    local p = catalog:getPhotoByLocalId(tonumber(pid))
+                    if p then table.insert(photos, p) else table.insert(notFound, tostring(pid)) end
+                end
+            end
+        end)
+    end)
+    if not resolveOk then
+        callback(ErrorUtils.createError("OPERATION_FAILED", "Failed to resolve collection: " .. tostring(resolveErr)))
+        return
+    end
+    if not collection then
+        callback(ErrorUtils.createError("PHOTO_NOT_FOUND", "Collection not found: " .. tostring(collectionId)))
+        return
+    end
+    if not mutable then
+        callback(ErrorUtils.createError("NOT_SUPPORTED", "Collection does not support membership changes (smart collection?)"))
+        return
+    end
+    if #photos == 0 then
+        callback(ErrorUtils.createError("PHOTO_NOT_FOUND", "No photos found with the provided IDs"))
+        return
+    end
+
+    -- 2. Mutate membership under WRITE access.
+    local writeOk, writeErr = ErrorUtils.safeCall(function()
+        catalog:withWriteAccessDo(actionName, function()
+            if verb == "add" then
+                collection:addPhotos(photos)  -- [SDK-VERIFY]
+            else
+                collection:removePhotos(photos)  -- [SDK-VERIFY]
+            end
+        end, { timeout = 10 })
+    end)
+    if not writeOk then
+        callback(ErrorUtils.createError("OPERATION_FAILED", "Failed to update collection membership: " .. tostring(writeErr)))
+        return
+    end
+
+    -- 3. Read the post-commit membership count under READ access (separate txn -> accurate count).
+    local photoCount = nil
+    ErrorUtils.safeCall(function()
+        catalog:withReadAccessDo(function()
+            photoCount = #collection:getPhotos()
+        end)
+    end)
+
+    callback(ErrorUtils.createSuccess({
+        collectionId = collectionId,
+        collectionName = collectionName,
+        photoCount = photoCount,
+        requested = #photoIds,
+        affected = #photos,
+        notFound = (#notFound > 0) and notFound or nil,
+    }))
+end
+
+function CatalogModule.addPhotosToCollection(params, callback)
+    CatalogModule._mutateCollectionMembership(params, callback, "add", "Add Photos to Collection")
+end
+
+function CatalogModule.removePhotosFromCollection(params, callback)
+    CatalogModule._mutateCollectionMembership(params, callback, "remove", "Remove Photos from Collection")
 end
 
 function CatalogModule.setViewFilter(params, callback)

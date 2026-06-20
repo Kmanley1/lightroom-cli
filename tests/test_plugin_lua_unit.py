@@ -566,3 +566,204 @@ class TestSetMetadataAlwaysResponds:
         # respond exactly once (the OLD callback-inside-withWriteAccessDo path called back 0 times).
         captured = self._call(cat, {"photoId": 123, "key": "title", "value": "x"})
         assert len(captured) == 1
+
+
+class TestBuildExportSettings:
+    """_buildExportSettings maps CLI params -> Lightroom LR_* export settings.
+
+    Ken's chosen default is ORIGINAL passthrough (no re-encode): the quality/resize knobs
+    are emitted only for raster formats, and exports never re-import into the catalog
+    (LR_reimportExportedPhoto=false -- his pipeline auto-writes XMP). Every LR_* key is still
+    [SDK-VERIFY] against live LrC; this locks only the param->settings mapping.
+    """
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    def _build(self, cat, params):
+        rt, module = cat
+        return module["_buildExportSettings"](rt.table_from(params))
+
+    def test_default_is_original_passthrough(self, cat):
+        s = self._build(cat, {"dest": "C:/out"})
+        assert s["LR_format"] == "ORIGINAL"
+        assert s["LR_export_destinationType"] == "specificFolder"
+        assert s["LR_export_destinationPathPrefix"] == "C:/out"
+        assert s["LR_reimportExportedPhoto"] is False
+        assert s["LR_collisionHandling"] == "rename"
+
+    def test_original_omits_raster_knobs(self, cat):
+        # ORIGINAL is a passthrough: quality/resize must NOT leak into the settings.
+        s = self._build(cat, {"dest": "C:/out", "quality": 50, "resizeLongEdge": 800})
+        assert s["LR_jpeg_quality"] is None
+        assert s["LR_size_doConstrain"] is None
+
+    def test_jpeg_quality_scaled_to_unit(self, cat):
+        s = self._build(cat, {"dest": "C:/out", "format": "JPEG", "quality": 80})
+        assert s["LR_format"] == "JPEG"
+        assert abs(s["LR_jpeg_quality"] - 0.8) < 1e-9
+
+    def test_resize_long_edge_constrains_both_dims(self, cat):
+        s = self._build(cat, {"dest": "C:/out", "format": "JPEG", "resizeLongEdge": 1024})
+        assert s["LR_size_doConstrain"] is True
+        assert s["LR_size_maxHeight"] == 1024
+        assert s["LR_size_maxWidth"] == 1024
+
+    def test_raster_without_resize_is_unconstrained(self, cat):
+        s = self._build(cat, {"dest": "C:/out", "format": "JPEG"})
+        assert s["LR_size_doConstrain"] is False
+
+    def test_overwrite_passthrough(self, cat):
+        s = self._build(cat, {"dest": "C:/out", "overwrite": "skip"})
+        assert s["LR_collisionHandling"] == "skip"
+
+    def test_dng_omits_raster_knobs(self, cat):
+        # DNG is raw passthrough -- the old `~= ORIGINAL` gate wrongly gave it jpeg_quality + resize.
+        s = self._build(cat, {"dest": "C:/out", "format": "DNG", "quality": 80, "resizeLongEdge": 1024})
+        assert s["LR_format"] == "DNG"
+        assert s["LR_jpeg_quality"] is None
+        assert s["LR_size_doConstrain"] is None
+
+    def test_quality_is_jpeg_only(self, cat):
+        # TIFF is raster (resize applies) but the JPEG-named quality knob must not be set for it.
+        s = self._build(cat, {"dest": "C:/out", "format": "TIFF", "quality": 80, "resizeLongEdge": 1024})
+        assert s["LR_jpeg_quality"] is None
+        assert s["LR_size_doConstrain"] is True
+
+
+class TestExportPhotosGuard:
+    """exportPhotos must respond once with MISSING_PARAM when dest is absent (before any SDK call)."""
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    def test_missing_dest_responds_once(self, cat):
+        rt, module = cat
+        captured = []
+        module["exportPhotos"](rt.table_from({}), lambda r: captured.append(r))
+        assert len(captured) == 1
+        assert captured[0]["error"]["code"] == "MISSING_PARAM"
+
+
+class TestFindCollectionById:
+    """_findCollectionById resolves a collection by localIdentifier across nested sets (#163 walk)."""
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    _TREE = """
+        local function coll(name, id)
+            return { localIdentifier = id, getName = function(self) return name end }
+        end
+        local function cset(colls, sets)
+            return {
+                getChildCollections = function(self) return colls or {} end,
+                getChildCollectionSets = function(self) return sets or {} end,
+            }
+        end
+        node = cset({ coll('Top', 10) }, { cset({ coll('Trip', 20) }, {}) })
+    """
+
+    def test_finds_nested_collection(self, cat):
+        rt, module = cat
+        rt.execute(self._TREE)
+        c = module["_findCollectionById"](rt.eval("node"), 20)
+        assert c is not None and c["getName"](c) == "Trip"
+
+    def test_miss_returns_none(self, cat):
+        rt, module = cat
+        rt.execute(self._TREE)
+        assert module["_findCollectionById"](rt.eval("node"), 999) is None
+
+    def test_nil_id_returns_none(self, cat):
+        rt, module = cat
+        rt.execute(self._TREE)
+        assert module["_findCollectionById"](rt.eval("node"), None) is None
+
+
+class TestCollectAllCollectionSets:
+    """_collectAllCollectionSets / _findCollectionSetById walk nested sets (createCollection --parent)."""
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    _TREE = """
+        local function cset(id, sets)
+            return {
+                localIdentifier = id,
+                getChildCollectionSets = function(self) return sets or {} end,
+            }
+        end
+        node = cset(nil, { cset(100, { cset(200, {}) }), cset(300, {}) })
+    """
+
+    def test_recurses_into_nested_sets(self, cat):
+        rt, module = cat
+        rt.execute(self._TREE)
+        sets = module["_collectAllCollectionSets"](rt.eval("node"))
+        assert sorted(s["localIdentifier"] for s in sets.values()) == [100, 200, 300]
+
+    def test_find_set_by_id(self, cat):
+        rt, module = cat
+        rt.execute(self._TREE)
+        s = module["_findCollectionSetById"](rt.eval("node"), 200)
+        assert s is not None and s["localIdentifier"] == 200
+
+    def test_find_set_miss_returns_none(self, cat):
+        rt, module = cat
+        rt.execute(self._TREE)
+        assert module["_findCollectionSetById"](rt.eval("node"), 999) is None
+
+    def test_nil_node_safe(self, cat):
+        rt, module = cat
+        assert list(module["_collectAllCollectionSets"](None).values()) == []
+
+
+class TestMutateCollectionMembershipGuards:
+    """add/removePhotosToCollection must guard params and respond exactly once before any SDK write."""
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    def _add(self, cat, lua_params):
+        rt, module = cat
+        captured = []
+        module["addPhotosToCollection"](rt.eval(lua_params), lambda r: captured.append(r))
+        return captured
+
+    def test_missing_collection_id(self, cat):
+        captured = self._add(cat, "{ photoIds = {'1'} }")
+        assert len(captured) == 1
+        assert captured[0]["error"]["code"] == "MISSING_PARAM"
+
+    def test_non_numeric_collection_id(self, cat):
+        captured = self._add(cat, "{ collectionId = 'abc', photoIds = {'1'} }")
+        assert len(captured) == 1
+        assert captured[0]["error"]["code"] == "INVALID_PARAM"
+
+    def test_empty_photo_ids(self, cat):
+        captured = self._add(cat, "{ collectionId = 5, photoIds = {} }")
+        assert len(captured) == 1
+        assert captured[0]["error"]["code"] == "INVALID_PARAM_VALUE"
+
+    def test_remove_also_guards_missing_id(self, cat):
+        rt, module = cat
+        captured = []
+        module["removePhotosFromCollection"](rt.eval("{ photoIds = {'1'} }"), lambda r: captured.append(r))
+        assert len(captured) == 1
+        assert captured[0]["error"]["code"] == "MISSING_PARAM"
