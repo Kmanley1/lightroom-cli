@@ -44,7 +44,9 @@ def cli(ctx, output, verbose, timeout, fields):
 
 
 from cli.commands.catalog import catalog
+from cli.commands.completion import completion
 from cli.commands.develop import develop
+from cli.commands.docs import docs
 from cli.commands.export import export
 from cli.commands.mcp import mcp
 from cli.commands.plugin import plugin
@@ -57,6 +59,8 @@ cli.add_command(system)
 cli.add_command(catalog)
 cli.add_command(develop)
 cli.add_command(export)
+cli.add_command(docs)
+cli.add_command(completion)
 cli.add_command(preview)
 cli.add_command(selection)
 cli.add_command(plugin)

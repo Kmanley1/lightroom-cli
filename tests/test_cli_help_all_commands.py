@@ -37,8 +37,14 @@ def test_help_contains_json_option(cmd_path):
     runner = CliRunner()
     args = cmd_path.split() + ["--help"]
     result = runner.invoke(cli, args)
-    # plugin, schema, mcp コマンドは execute_command を使わないので除外
-    if cmd_path.startswith("plugin") or cmd_path.startswith("mcp") or cmd_path == "schema":
+    # plugin, schema, mcp, docs, completion コマンドは execute_command を使わないので除外
+    if (
+        cmd_path.startswith("plugin")
+        or cmd_path.startswith("mcp")
+        or cmd_path.startswith("docs")
+        or cmd_path == "schema"
+        or cmd_path == "completion"
+    ):
         pytest.skip("Non-bridge command")
     # グループ help（サブコマンド持ち）も除外
     if "Commands:" in result.output:

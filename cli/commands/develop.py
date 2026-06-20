@@ -2,6 +2,7 @@ import json
 
 import click
 
+from cli.commands.completion import complete_develop_param
 from cli.decorators import json_input_options
 from cli.helpers import coerce_scalar, execute_command
 from cli.output import OutputFormatter
@@ -42,7 +43,7 @@ def get_settings(ctx, photo_id, **kwargs):
 
 
 @develop.command("set")
-@click.argument("pairs", nargs=-1, required=True)
+@click.argument("pairs", nargs=-1, required=True, shell_complete=complete_develop_param)
 @click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
 @json_input_options
 @click.pass_context
@@ -75,7 +76,7 @@ def auto_tone(ctx, dry_run, **kwargs):
 
 
 @develop.command("get")
-@click.argument("parameter")
+@click.argument("parameter", shell_complete=complete_develop_param)
 @json_input_options
 @click.pass_context
 def get_value(ctx, parameter, **kwargs):
@@ -176,7 +177,7 @@ def paste_settings(ctx, dry_run, **kwargs):
 
 
 @develop.command("range")
-@click.argument("param")
+@click.argument("param", shell_complete=complete_develop_param)
 @json_input_options
 @click.pass_context
 def get_range(ctx, param, **kwargs):
@@ -185,7 +186,7 @@ def get_range(ctx, param, **kwargs):
 
 
 @develop.command("reset-param")
-@click.argument("param")
+@click.argument("param", shell_complete=complete_develop_param)
 @click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
 @json_input_options
 @click.pass_context

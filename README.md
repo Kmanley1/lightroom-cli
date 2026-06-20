@@ -183,7 +183,7 @@ lr -o table catalog list --limit 10
 | [`lr plugin`](#lr-plugin) | 3 | Plugin installation and management |
 | [`lr mcp`](#lr-mcp) | 4 | MCP Server management |
 
-**For all 107 commands, see the [CLI Reference](docs/CLI_REFERENCE.md).**
+**For the full command reference, see the [CLI Reference](docs/CLI_REFERENCE.md)** — generated from the schema via `lr docs reference`.
 
 ### lr system
 
