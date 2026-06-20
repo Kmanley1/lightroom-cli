@@ -492,6 +492,44 @@ class TestCollectKeywordsMatching:
         assert list(module["_collectKeywordsMatching"](rt.eval("tree"), None).values()) == []
 
 
+class TestCollectAllCollections:
+    """getCollections / getCollectionPhotos must reach collections nested in collection sets (#163).
+    The pure helper recursively flattens the collection tree (catalog -> sets -> sub-sets)."""
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    _TREE = """
+        local function coll(name)
+            return { getName = function(self) return name end }
+        end
+        local function cset(colls, sets)
+            return {
+                getChildCollections = function(self) return colls or {} end,
+                getChildCollectionSets = function(self) return sets or {} end,
+            }
+        end
+        -- catalog: 1 top-level collection + 'Events' set {2023, 2024} containing a 'Trips' sub-set {Japan}
+        catalogNode = cset(
+            { coll('Top') },
+            { cset({ coll('2023'), coll('2024') }, { cset({ coll('Japan') }) }) }
+        )
+    """
+
+    def test_recurses_into_collection_sets(self, cat):
+        rt, module = cat
+        rt.execute(self._TREE)
+        colls = module["_collectAllCollections"](rt.eval("catalogNode"))
+        assert sorted(c["getName"](c) for c in colls.values()) == ["2023", "2024", "Japan", "Top"]
+
+    def test_nil_node_safe(self, cat):
+        rt, module = cat
+        assert list(module["_collectAllCollections"](None).values()) == []
+
+
 class TestSetMetadataAlwaysResponds:
     """setMetadata must always call back exactly once -- no silent hang on write-access failure.
 

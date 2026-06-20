@@ -882,6 +882,29 @@ function CatalogModule.findPhotos(params, callback)
 end
 
 -- Get collections in catalog
+-- Pure: recursively collect every collection from a node (catalog or collection set),
+-- descending through child collection sets. Each node responds to :getChildCollections()
+-- and :getChildCollectionSets(). Returns a flat array of collection objects. Unit-testable.
+-- Fixes collections nested inside collection sets being unreachable (#163).
+function CatalogModule._collectAllCollections(node)
+    local result = {}
+    if node == nil then return result end
+    local function visit(n)
+        if n.getChildCollections then
+            for _, c in ipairs(n:getChildCollections()) do
+                table.insert(result, c)
+            end
+        end
+        if n.getChildCollectionSets then
+            for _, s in ipairs(n:getChildCollectionSets()) do
+                visit(s)
+            end
+        end
+    end
+    visit(node)
+    return result
+end
+
 function CatalogModule.getCollections(params, callback)
     ensureLrModules()
     local logger = getLogger()
@@ -893,7 +916,7 @@ function CatalogModule.getCollections(params, callback)
 
     local collections
     catalog:withReadAccessDo(function()
-        collections = catalog:getChildCollections()
+        collections = CatalogModule._collectAllCollections(catalog)
     end)
 
     local resultCollections = {}
@@ -1855,8 +1878,7 @@ function CatalogModule.getCollectionPhotos(params, callback)
     -- Find the collection by ID
     local targetCollection = nil
     catalog:withReadAccessDo(function()
-        local collections = catalog:getChildCollections()
-        for _, collection in ipairs(collections) do
+        for _, collection in ipairs(CatalogModule._collectAllCollections(catalog)) do
             if collection.localIdentifier == collectionId then
                 targetCollection = collection
                 break
