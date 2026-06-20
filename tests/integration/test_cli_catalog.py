@@ -44,6 +44,20 @@ def test_catalog_list_with_options(mock_get_bridge, runner):
 
 
 @patch("cli.helpers.get_bridge")
+def test_catalog_set_metadata_coerces_value(mock_get_bridge, runner):
+    """lr catalog set-metadata <id> rating 5 sends a number, not the string '5' (#147)."""
+    mock_bridge = AsyncMock()
+    mock_bridge.send_command.return_value = {"id": "x", "success": True, "result": {}}
+    mock_get_bridge.return_value = mock_bridge
+
+    result = runner.invoke(cli, ["catalog", "set-metadata", "123", "rating", "5"])
+    assert result.exit_code == 0
+    mock_bridge.send_command.assert_called_once_with(
+        "catalog.setMetadata", {"photoId": "123", "key": "rating", "value": 5.0}, timeout=30.0
+    )
+
+
+@patch("cli.helpers.get_bridge")
 def test_catalog_set_rating(mock_get_bridge, runner):
     """lr catalog set-rating photo-1 5 がratingを設定する"""
     mock_bridge = AsyncMock()

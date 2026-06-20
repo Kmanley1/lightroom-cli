@@ -16,6 +16,7 @@ class ParamType(str, Enum):
     JSON_OBJECT = "json_object"
     JSON_ARRAY = "json_array"
     ENUM = "enum"
+    SCALAR = "scalar"  # number, boolean, or string -- type depends on the target param (develop setValue, setMetadata)
 
 
 @dataclass
@@ -135,7 +136,7 @@ _register(
                 required=True,
                 description="Develop parameter name (e.g., Exposure, Contrast)",
             ),
-            ParamSchema("value", ParamType.FLOAT, required=True, description="Parameter value"),
+            ParamSchema("value", ParamType.SCALAR, required=True, description="Parameter value (number, boolean, or string per the parameter)"),
         ],
         mutating=True,
         timeout=10.0,
@@ -1354,9 +1355,9 @@ _register(
             ParamSchema("key", ParamType.STRING, required=True, description="Metadata key name"),
             ParamSchema(
                 "value",
-                ParamType.STRING,
+                ParamType.SCALAR,
                 required=True,
-                description="Metadata value to set",
+                description="Metadata value to set (number, boolean, or string per the key)",
             ),
         ],
         mutating=True,

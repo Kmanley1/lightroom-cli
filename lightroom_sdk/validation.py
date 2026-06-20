@@ -165,6 +165,19 @@ def _coerce_type(name: str, value: object, schema: ParamSchema) -> object:
                         suggestions=[f"Valid values: {', '.join(schema.enum_values or [])}"],
                     )
                 return str(value)
+            case ParamType.SCALAR:
+                # number, boolean, or string -- the CLI/agent supplies the right type and the
+                # bridge/SDK interprets it per the target parameter. Sanitize strings only.
+                if isinstance(value, str):
+                    return _sanitize_string(name, value)
+                if isinstance(value, (bool, int, float)):
+                    return value
+                raise ValidationError(
+                    f"Invalid type for '{name}': expected a scalar (number, boolean, or string), "
+                    f"got {type(value).__name__}",
+                    param=name,
+                    suggestions=[f"Provide a number, boolean, or string for '{name}'"],
+                )
             case _:
                 return value
     except ValidationError:

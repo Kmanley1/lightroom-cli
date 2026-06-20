@@ -3,23 +3,21 @@ import json
 import click
 
 from cli.decorators import json_input_options
-from cli.helpers import execute_command
+from cli.helpers import coerce_scalar, execute_command
 from cli.output import OutputFormatter
 
 
 def _parse_pairs(pairs: tuple) -> dict:
-    """可変長引数 (param, value, param, value, ...) を辞書に変換"""
+    """可変長引数 (param, value, param, value, ...) を辞書に変換。
+
+    値は数値 / true・false / 文字列に型強制する（WhiteBalance='Auto' や
+    ConvertToGrayscale=true のような非数値パラメータも設定できるように）。
+    """
     if len(pairs) % 2 != 0:
         raise click.BadParameter("Parameters must be in 'param value' pairs")
     result = {}
     for i in range(0, len(pairs), 2):
-        try:
-            result[pairs[i]] = float(pairs[i + 1])
-        except ValueError:
-            raise click.BadParameter(
-                f"Invalid numeric value '{pairs[i + 1]}' for parameter '{pairs[i]}'. "
-                f"Expected a number (e.g., 0.5, -1.0, 100)"
-            )
+        result[pairs[i]] = coerce_scalar(pairs[i + 1])
     return result
 
 

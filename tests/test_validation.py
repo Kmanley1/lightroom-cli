@@ -25,18 +25,21 @@ class TestValidateParams:
         with pytest.raises(ValidationError, match="Required parameter"):
             validate_params("develop.setValue", {"param": "Exposure"})
 
-    def test_type_coercion_string_to_float(self):
+    def test_setvalue_value_is_scalar_passthrough(self):
+        """develop.setValue.value is SCALAR -- number/bool/string pass through unchanged
+        (the CLI coerces the raw arg; the bridge interprets per parameter). #116"""
         from lightroom_sdk.validation import validate_params
 
-        result = validate_params("develop.setValue", {"param": "Exposure", "value": "0.5"})
-        assert result["value"] == 0.5
-        assert isinstance(result["value"], float)
+        assert validate_params("develop.setValue", {"param": "Exposure", "value": 0.5})["value"] == 0.5
+        assert validate_params("develop.setValue", {"param": "ConvertToGrayscale", "value": True})["value"] is True
+        assert validate_params("develop.setValue", {"param": "WhiteBalance", "value": "Auto"})["value"] == "Auto"
 
     def test_invalid_type_raises(self):
+        """SCALAR rejects non-scalar values (dict/list)."""
         from lightroom_sdk.validation import ValidationError, validate_params
 
         with pytest.raises(ValidationError, match="Invalid type"):
-            validate_params("develop.setValue", {"param": "Exposure", "value": "not_a_number"})
+            validate_params("develop.setValue", {"param": "Exposure", "value": {"not": "scalar"}})
 
     def test_unknown_command_skips_validation(self):
         from lightroom_sdk.validation import validate_params
@@ -143,7 +146,7 @@ class TestSuggestions:
         from lightroom_sdk.validation import ValidationError, validate_params
 
         with pytest.raises(ValidationError) as exc_info:
-            validate_params("develop.setValue", {"param": "Exposure", "value": "not_a_number"})
+            validate_params("develop.setValue", {"param": "Exposure", "value": ["not", "scalar"]})
         assert len(exc_info.value.suggestions) > 0
 
     def test_format_error_json_includes_suggestions(self):

@@ -100,6 +100,18 @@ class TestPluginStatus:
         assert result.exit_code == 0
         assert "symlink" in result.output.lower()
 
+    def test_status_json_honors_output(self, tmp_path, monkeypatch, runner):
+        """lr -o json plugin status emits JSON, not plain text (#131)."""
+        import json
+
+        modules_dir = tmp_path / "Modules"
+        modules_dir.mkdir(parents=True)
+        monkeypatch.setenv("LR_PLUGIN_DIR", str(modules_dir))
+        result = runner.invoke(cli, ["-o", "json", "plugin", "status"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)  # would raise if plain text leaked
+        assert payload["status"] == "not installed"
+
 
 from unittest.mock import patch
 

@@ -325,7 +325,9 @@ def create_virtual_copy(ctx, dry_run, **kwargs):
 @click.pass_context
 def set_metadata(ctx, photo_id, key, value, dry_run, **kwargs):
     """Set arbitrary metadata key/value for a photo"""
-    execute_command(ctx, "catalog.setMetadata", {"photoId": photo_id, "key": key, "value": value})
+    from cli.helpers import coerce_scalar
+
+    execute_command(ctx, "catalog.setMetadata", {"photoId": photo_id, "key": key, "value": coerce_scalar(value)})
 
 
 @catalog.command("create-collection")
