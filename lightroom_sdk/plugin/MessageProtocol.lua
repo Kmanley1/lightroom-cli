@@ -152,6 +152,54 @@ function MessageProtocol:decode(jsonString)
 end
 
 -- Simple JSON parser for basic cases (handles the messages we're sending)
+-- Encode a Unicode code point (BMP) as UTF-8.
+function MessageProtocol:_utf8FromCodepoint(code)
+    if code < 0x80 then
+        return string.char(code)
+    elseif code < 0x800 then
+        return string.char(0xC0 + math.floor(code / 0x40), 0x80 + (code % 0x40))
+    else
+        return string.char(
+            0xE0 + math.floor(code / 0x1000),
+            0x80 + (math.floor(code / 0x40) % 0x40),
+            0x80 + (code % 0x40))
+    end
+end
+
+-- Decode JSON string escapes (\\ \" \/ \n \t \r \b \f \uXXXX) in one left-to-right pass. The simple
+-- parser strips only a value's outer quotes, so without this a path sent as "C:\\Users" decoded to the
+-- doubled "C:\\Users", \uXXXX stayed literal, and an embedded \" kept a stray backslash. Single-pass
+-- so "\\u0041" (escaped backslash + literal uXXXX) is NOT mistaken for the escape A.
+function MessageProtocol:_unescapeJSONString(s)
+    if not s:find("\\", 1, true) then return s end  -- fast path: nothing to unescape
+    local simple = { n = "\n", t = "\t", r = "\r", b = "\b", f = "\f", ["/"] = "/", ['"'] = '"', ["\\"] = "\\" }
+    local out = {}
+    local i, n = 1, #s
+    while i <= n do
+        local c = s:sub(i, i)
+        if c == "\\" and i < n then
+            local nc = s:sub(i + 1, i + 1)
+            if nc == "u" then
+                local hex = s:sub(i + 2, i + 5)
+                if #hex == 4 and hex:match("^%x%x%x%x$") then
+                    out[#out + 1] = self:_utf8FromCodepoint(tonumber(hex, 16))
+                    i = i + 6
+                else
+                    out[#out + 1] = nc
+                    i = i + 2
+                end
+            else
+                out[#out + 1] = simple[nc] or nc
+                i = i + 2
+            end
+        else
+            out[#out + 1] = c
+            i = i + 1
+        end
+    end
+    return table.concat(out)
+end
+
 function MessageProtocol:_parseSimpleJSON(jsonStr)
     -- Very basic JSON parsing for our specific message format
     -- This handles: {"id": "...", "command": "...", "params": {...}, "timestamp": 123}
@@ -222,7 +270,7 @@ function MessageProtocol:_parseSimpleJSON(jsonStr)
             
             if value:match('^".*"$') then
                 -- String value
-                result[key] = value:gsub('^"', ''):gsub('"$', '')
+                result[key] = self:_unescapeJSONString(value:gsub('^"', ''):gsub('"$', ''))
             elseif value:match('^%d+$') then
                 -- Number value
                 result[key] = tonumber(value)
@@ -286,7 +334,7 @@ function MessageProtocol:_parseSimpleJSON(jsonStr)
                         item = item:gsub("^%s+", ""):gsub("%s+$", "")
                         -- logger:debug("  parsing item: '" .. item .. "'")
                         if item:match('^".*"$') then
-                            local stringValue = item:gsub('^"', ''):gsub('"$', '')
+                            local stringValue = self:_unescapeJSONString(item:gsub('^"', ''):gsub('"$', ''))
                             table.insert(arrayResult, stringValue)
                             -- logger:debug("    -> string: '" .. stringValue .. "'")
                         elseif item:match('^%d+$') then

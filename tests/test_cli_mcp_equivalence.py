@@ -89,12 +89,9 @@ ORPHAN_LUA_HANDLERS_ALLOWLIST = {
 # a sentinel cli_path that dispatches the real command). This allowlist holds the ONE schema
 # command that satisfies NEITHER: its advertised cli_path is not a leaf and no CLI command sends
 # it. (It still ships an MCP tool + a Lua handler, so only the CLI surface is dead.)
-#   develop.batchApplySettings  cli_path 'develop.batch-apply'
-#     -> no `develop batch-apply` leaf exists and "develop.batchApplySettings" appears nowhere
-#        in cli/. The CLI's batch verb is `develop batch-set` (sends develop.batchSetValue).
-CLI_UNREACHABLE_SCHEMA_ALLOWLIST = {
-    "develop.batchApplySettings",
-}
+#   (Resolved 2026-06-20: develop.batchApplySettings now has a `develop batch-apply` CLI verb, so the
+#    allowlist is empty -- every non-plugin schema command is CLI-reachable.)
+CLI_UNREACHABLE_SCHEMA_ALLOWLIST = set()
 
 
 # ==========================================================================================

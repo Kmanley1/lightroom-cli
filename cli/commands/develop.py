@@ -66,6 +66,28 @@ def set_values(ctx, pairs, dry_run, **kwargs):
         execute_command(ctx, "develop.setValue", {"param": param, "value": value})
 
 
+@develop.command("batch-apply")
+@click.argument("photo_ids", nargs=-1, required=False)
+@click.option("--set", "settings_pairs", multiple=True, help="Setting as Param=Value (repeatable)")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def batch_apply(ctx, photo_ids, settings_pairs, dry_run, **kwargs):
+    """Apply develop settings to many photos: batch-apply <ids...> --set Exposure=0.5 --set Contrast=20"""
+    if not settings_pairs:
+        raise click.BadParameter("at least one --set Param=Value is required", param_hint="--set")
+    settings = {}
+    for pair in settings_pairs:
+        if "=" not in pair:
+            raise click.BadParameter(f"--set must be Param=Value, got '{pair}'", param_hint="--set")
+        key, value = pair.split("=", 1)
+        settings[key.strip()] = coerce_scalar(value)
+    params = {"settings": settings}
+    if photo_ids:
+        params["photoIds"] = list(photo_ids)
+    execute_command(ctx, "develop.batchApplySettings", params, timeout=60.0)
+
+
 @develop.command("auto-tone")
 @click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
 @json_input_options

@@ -48,18 +48,14 @@ FWD_PATH = "C:/Users/Ken/2009/photo.jpg"
 
 
 # ---------------------------------------------------------------------------
-# Allowlist: VERIFIED known limitations of the hand-rolled Lua request DECODER
-# (MessageProtocol:_parseSimpleJSON). These are reported in `violations`. They are
-# NOT regressions in the locked encode-side fix (Direction A round-trips all of
-# them perfectly). The decoder strips a string value's outer quotes but never
-# processes JSON escape sequences, so any payload whose JSON form contains a
-# backslash escape decodes with the escape left LITERAL.
+# Escape cases the request DECODER (MessageProtocol:_parseSimpleJSON) now decodes FAITHFULLY, after
+# the 2026-06-20 fix that unescapes JSON string escapes (\\ \" \n \t \r \uXXXX) in a single pass.
+# Before the fix these were lossy (the decoder stripped only the outer quotes); kept here as
+# regression guards proving each escaped payload round-trips Python json.dumps -> Lua decode exactly.
 #
-# Each tuple: (label, python_value, json_text_sent, what_decoder_returns)
-# Verified empirically against lightroom_sdk/plugin/MessageProtocol.lua on
-# 2026-06-20 with lupa 2.8 / Lua 5.5.
+# Each tuple: (label, python_value, json_text_sent, note)
 # ---------------------------------------------------------------------------
-DECODE_KNOWN_LIMITATIONS = [
+DECODE_ESCAPED_CASES = [
     # default json.dumps escapes the backslash; decoder keeps "\\" literal.
     ("win_path_backslash", WIN_PATH, json.dumps({"path": WIN_PATH}),
      "backslash escape \\\\ is NOT collapsed -> path keeps doubled backslashes"),
@@ -330,38 +326,24 @@ class TestPythonToLuaDecodeRoundTrip:
 # ===========================================================================
 # Decoder known-limitation pins (reported as violations, not hidden)
 # ===========================================================================
-class TestDecoderKnownLimitations:
-    """Lock the CURRENT (lossy) behaviour of the request decoder for escaped
-    payloads, so a future fix that makes it faithful trips this test and prompts a
-    review of DECODE_KNOWN_LIMITATIONS. Each entry is a VERIFIED round-trip failure
-    of Python json.dumps -> Lua decode, reported verbatim in `violations`.
-
-    These are limitations of the *request* decoder only. The locked encode-side fix
-    (Direction A) round-trips every one of these values perfectly -- see
-    TestEncodeToPythonRoundTrip -- so the production read path is unaffected.
+class TestDecoderEscapeHandling:
+    """The request decoder (MessageProtocol:_parseSimpleJSON) unescapes JSON string escapes, so
+    Python json.dumps -> Lua decode round-trips faithfully. These cases were lossy before the
+    2026-06-20 fix; kept as regression guards (a regression would re-double backslashes / drop \\uXXXX).
     """
 
     def _decode_first_value(self, proto, json_text):
         rt, module = proto
         t = module["decode"](module, json_text)
         d = dict(t)
-        # the limitation payloads use key "path" or "v"
+        # payloads use key "path" or "v"
         return d.get("path", d.get("v"))
 
     @pytest.mark.parametrize(
         "label,py_value,json_text,_desc",
-        DECODE_KNOWN_LIMITATIONS,
-        ids=[c[0] for c in DECODE_KNOWN_LIMITATIONS],
+        DECODE_ESCAPED_CASES,
+        ids=[c[0] for c in DECODE_ESCAPED_CASES],
     )
-    def test_escaped_payload_does_not_yet_roundtrip(self, proto, label, py_value, json_text, _desc):
+    def test_escaped_payload_roundtrips(self, proto, label, py_value, json_text, _desc):
         got = self._decode_first_value(proto, json_text)
-        # Documented behaviour: the decoded value is NOT equal to the original
-        # (it still carries the literal JSON escape). If this assertion ever fails
-        # because they ARE equal, the decoder was fixed -- update the allowlist.
-        assert got != py_value, (
-            f"{label}: decoder now round-trips an escaped payload that "
-            f"DECODE_KNOWN_LIMITATIONS marks as lossy -- re-evaluate the allowlist"
-        )
-        # And the lossy result still contains a backslash (the un-processed escape),
-        # except for the pure-unicode \\u case where it carries the literal 'u'+hex.
-        assert (BS in got) or ("u00" in got) or ("u" in got and label == "unicode_ascii_escaped")
+        assert got == py_value, f"{label}: decoder must faithfully unescape -> got {got!r}, want {py_value!r}"

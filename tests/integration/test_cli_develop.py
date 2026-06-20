@@ -28,6 +28,29 @@ def test_develop_get_settings(mock_get_bridge, runner):
 
 
 @patch("cli.helpers.get_bridge")
+def test_develop_batch_apply(mock_get_bridge, runner):
+    """lr develop batch-apply applies settings (Param=Value) to multiple photos."""
+    mock_bridge = AsyncMock()
+    mock_bridge.send_command.return_value = {"id": "x", "success": True, "result": {}}
+    mock_get_bridge.return_value = mock_bridge
+    result = runner.invoke(
+        cli, ["develop", "batch-apply", "1", "2", "--set", "Exposure=0.5", "--set", "Contrast=20"]
+    )
+    assert result.exit_code == 0
+    mock_bridge.send_command.assert_called_once_with(
+        "develop.batchApplySettings",
+        {"settings": {"Exposure": 0.5, "Contrast": 20.0}, "photoIds": ["1", "2"]},
+        timeout=60.0,
+    )
+
+
+def test_develop_batch_apply_requires_settings(runner):
+    """batch-apply with no --set is a usage error (exit != 0)."""
+    result = runner.invoke(cli, ["develop", "batch-apply", "1"])
+    assert result.exit_code != 0
+
+
+@patch("cli.helpers.get_bridge")
 def test_develop_set_single_param(mock_get_bridge, runner):
     """lr develop set Exposure 1.5 が単一パラメータを設定する"""
     mock_bridge = AsyncMock()
