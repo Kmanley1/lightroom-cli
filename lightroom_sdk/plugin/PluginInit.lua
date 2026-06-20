@@ -387,6 +387,8 @@ local function registerApiCommands()
     router:register("catalog.exportPhotos", CatalogModule.exportPhotos, "sync")
     router:register("catalog.addPhotosToCollection", CatalogModule.addPhotosToCollection, "sync")
     router:register("catalog.removePhotosFromCollection", CatalogModule.removePhotosFromCollection, "sync")
+    router:register("catalog.batchSetMetadata", CatalogModule.batchSetMetadata, "sync")
+    router:register("catalog.saveMetadata", CatalogModule.saveMetadata, "sync")
 
     -- Preview module commands (registered as sync for catalog API access)
     Logger:info("Registering preview commands...")

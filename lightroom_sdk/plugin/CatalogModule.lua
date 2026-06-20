@@ -490,7 +490,7 @@ end
 local KNOWN_FILTER_KEYS = {
     flag = true, rating = true, ratingOp = true, colorLabel = true, camera = true,
     folderPath = true, captureDateFrom = true, captureDateTo = true,
-    fileFormat = true, keyword = true, filename = true,
+    fileFormat = true, keyword = true, filename = true, text = true,
 }
 
 -- Returns a sorted list of filter keys in searchDesc that are not recognized, or nil
@@ -614,6 +614,20 @@ local function matchPhoto(photo, searchDesc)
     if searchDesc.filename then
         local fname = photo:getFormattedMetadata("fileName") or ""
         if not string.find(fname, searchDesc.filename, 1, true) then
+            return false
+        end
+    end
+
+    -- Free-text filter: case-insensitive substring across filename, title, caption. Uses RAW metadata
+    -- (filename = basename of the raw path) so a full-catalog scan stays fast. Keyword text is the
+    -- separate indexed `keyword` filter -- scanning keyword names per photo would dominate the cost.
+    if searchDesc.text and searchDesc.text ~= "" then
+        local needle = string.lower(searchDesc.text)
+        local path = photo:getRawMetadata("path") or ""
+        local fname = path:match("[^\\/]+$") or ""
+        if not (string.find(string.lower(fname), needle, 1, true)
+            or string.find(string.lower(photo:getRawMetadata("title") or ""), needle, 1, true)
+            or string.find(string.lower(photo:getRawMetadata("caption") or ""), needle, 1, true)) then
             return false
         end
     end
@@ -1262,6 +1276,167 @@ function CatalogModule.addKeywords(params, callback)
     else
         callback(ErrorUtils.createError("OPERATION_FAILED", "Failed to add keywords: " .. tostring(writeError)))
     end
+end
+
+-- Apply metadata fields (rating/colorLabel/flag/title/caption/addKeywords) to many photos in one
+-- write transaction (one undo step). Photos resolved by id list or the current selection (filmstrip-
+-- guarded). Per-photo continue-on-error; keyword objects resolved/created once for the whole batch.
+function CatalogModule.batchSetMetadata(params, callback)
+    ensureLrModules()
+    params = params or {}
+    local hasKeywords = type(params.addKeywords) == "table" and #params.addKeywords > 0
+    local hasField = params.rating ~= nil or params.colorLabel ~= nil or params.flag ~= nil
+        or params.title ~= nil or params.caption ~= nil or hasKeywords
+    if not hasField then
+        callback(ErrorUtils.createError("INVALID_PARAM_VALUE",
+            "Provide at least one field to set (rating/colorLabel/flag/title/caption/addKeywords)"))
+        return
+    end
+    -- Fail fast on bad scalar values (match the single setters' guards)
+    if params.rating ~= nil then
+        local rv = tonumber(params.rating)
+        if rv == nil or rv < 0 or rv > 5 then
+            callback(ErrorUtils.createError("INVALID_PARAM_VALUE", "rating must be between 0 and 5"))
+            return
+        end
+    end
+    if params.flag ~= nil then
+        local fv = tonumber(params.flag)
+        if fv ~= 1 and fv ~= -1 and fv ~= 0 then
+            callback(ErrorUtils.createError("INVALID_PARAM_VALUE", "flag must be 1 (pick), -1 (reject), or 0 (none)"))
+            return
+        end
+    end
+
+    local catalog = LrApplication.activeCatalog()
+    local photos, notFound = {}, {}
+    local resolveOk, resolveErr = ErrorUtils.safeCall(function()
+        catalog:withReadAccessDo(function()
+            if params.photoIds and type(params.photoIds) == "table" and #params.photoIds > 0 then
+                for _, pid in ipairs(params.photoIds) do
+                    local p = catalog:getPhotoByLocalId(tonumber(pid))
+                    if p then table.insert(photos, p) else table.insert(notFound, tostring(pid)) end
+                end
+            else
+                photos = CatalogModule._resolveSelection(catalog:getTargetPhoto(), catalog:getTargetPhotos())
+            end
+        end)
+    end)
+    if not resolveOk then
+        callback(ErrorUtils.createError("OPERATION_FAILED", "Failed to resolve photos: " .. tostring(resolveErr)))
+        return
+    end
+    if #photos == 0 then
+        callback(ErrorUtils.createError("PHOTO_NOT_FOUND", "No photos to update (empty selection and no valid photoIds)"))
+        return
+    end
+
+    local succeeded, failed, results = 0, 0, {}
+    local writeOk, writeErr = ErrorUtils.safeCall(function()
+        catalog:withWriteAccessDo("Batch Set Metadata", function()
+            -- Resolve/create keyword objects ONCE for the whole batch (reuse-or-create per addKeywords).
+            local keywordObjs = {}
+            if hasKeywords then
+                local existing = catalog:getKeywords()
+                local created = {}
+                for _, kwName in ipairs(params.addKeywords) do
+                    local kw = created[kwName] or CatalogModule._findKeywordByName(existing, kwName)
+                    if not kw then kw = catalog:createKeyword(kwName, {}, false, nil, true); created[kwName] = kw end
+                    if kw then table.insert(keywordObjs, kw) end
+                end
+            end
+            for _, photo in ipairs(photos) do
+                local pid = tostring(photo.localIdentifier)
+                local ok, err = ErrorUtils.safeCall(function()
+                    if params.rating ~= nil then
+                        local rv = tonumber(params.rating)
+                        if rv == 0 then rv = nil end  -- LR: setRawMetadata("rating", 0) throws
+                        photo:setRawMetadata("rating", rv)
+                    end
+                    if params.colorLabel ~= nil then photo:setRawMetadata("colorNameForLabel", params.colorLabel) end
+                    if params.flag ~= nil then photo:setRawMetadata("pickStatus", tonumber(params.flag)) end
+                    if params.title ~= nil then photo:setRawMetadata("title", params.title) end
+                    if params.caption ~= nil then photo:setRawMetadata("caption", params.caption) end
+                    for _, kw in ipairs(keywordObjs) do photo:addKeyword(kw) end
+                end)
+                if ok then
+                    succeeded = succeeded + 1
+                    table.insert(results, { photoId = pid, success = true })
+                else
+                    failed = failed + 1
+                    table.insert(results, { photoId = pid, success = false, error = tostring(err) })
+                end
+            end
+        end, { timeout = 30 })
+    end)
+    if not writeOk then
+        callback(ErrorUtils.createError("OPERATION_FAILED", "Failed to set metadata: " .. tostring(writeErr)))
+        return
+    end
+
+    for _, pid in ipairs(notFound) do
+        failed = failed + 1
+        table.insert(results, { photoId = pid, success = false, error = "Photo not found" })
+    end
+
+    callback(ErrorUtils.createSuccess({
+        total = #results, succeeded = succeeded, failed = failed, results = results,
+    }))
+end
+
+-- Save catalog metadata to each photo's file (XMP). Photos by id list or current selection.
+-- The READ direction (re-read file -> catalog) is intentionally NOT exposed: it overwrites catalog
+-- edits with file values, which is unsafe when LR is the source of truth and auto-write-XMP is on.
+function CatalogModule.saveMetadata(params, callback)
+    ensureLrModules()
+    params = params or {}
+    local catalog = LrApplication.activeCatalog()
+    local photos, notFound = {}, {}
+    local resolveOk, resolveErr = ErrorUtils.safeCall(function()
+        catalog:withReadAccessDo(function()
+            if params.photoIds and type(params.photoIds) == "table" and #params.photoIds > 0 then
+                for _, pid in ipairs(params.photoIds) do
+                    local p = catalog:getPhotoByLocalId(tonumber(pid))
+                    if p then table.insert(photos, p) else table.insert(notFound, tostring(pid)) end
+                end
+            else
+                photos = CatalogModule._resolveSelection(catalog:getTargetPhoto(), catalog:getTargetPhotos())
+            end
+        end)
+    end)
+    if not resolveOk then
+        callback(ErrorUtils.createError("OPERATION_FAILED", "Failed to resolve photos: " .. tostring(resolveErr)))
+        return
+    end
+    if #photos == 0 then
+        callback(ErrorUtils.createError("PHOTO_NOT_FOUND", "No photos to save (empty selection and no valid photoIds)"))
+        return
+    end
+
+    local succeeded, failed, results = 0, 0, {}
+    for _, photo in ipairs(photos) do
+        local pid = tostring(photo.localIdentifier)
+        local ok, err = ErrorUtils.safeCall(function()
+            photo:saveMetadata()  -- [SDK-VERIFY] writes catalog metadata to the file's XMP
+        end)
+        if ok then
+            succeeded = succeeded + 1
+            table.insert(results, { photoId = pid, success = true })
+        else
+            failed = failed + 1
+            table.insert(results, { photoId = pid, success = false, error = tostring(err) })
+        end
+        LrTasks.yield()
+    end
+
+    for _, pid in ipairs(notFound) do
+        failed = failed + 1
+        table.insert(results, { photoId = pid, success = false, error = "Photo not found" })
+    end
+
+    callback(ErrorUtils.createSuccess({
+        total = #results, succeeded = succeeded, failed = failed, results = results,
+    }))
 end
 
 -- Set photo flag (pick/reject/none)

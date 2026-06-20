@@ -1478,6 +1478,49 @@ _register(
         response_fields=["collectionId", "collectionName", "photoCount", "affected", "requested", "notFound"],
     ),
     CommandSchema(
+        "catalog.batchSetMetadata",
+        "catalog.batch-set",
+        "Set metadata fields (rating/colorLabel/flag/title/caption/keywords) across many photos in one transaction",
+        params=[
+            ParamSchema(
+                "photoIds",
+                ParamType.JSON_ARRAY,
+                description="Photo IDs; omit to use the current selection",
+            ),
+            ParamSchema("rating", ParamType.INTEGER, min=0, max=5, description="Rating 0-5 (0 clears)"),
+            ParamSchema(
+                "colorLabel",
+                ParamType.STRING,
+                description="Color label (red/yellow/green/blue/purple/none)",
+            ),
+            ParamSchema("flag", ParamType.INTEGER, min=-1, max=1, description="Pick flag: 1 pick, -1 reject, 0 none"),
+            ParamSchema("title", ParamType.STRING, description="Title, applied to every photo"),
+            ParamSchema("caption", ParamType.STRING, description="Caption, applied to every photo"),
+            ParamSchema("addKeywords", ParamType.JSON_ARRAY, description="Keyword names to add to every photo"),
+        ],
+        mutating=True,
+        timeout=60.0,
+        supports_dry_run=True,
+        response_fields=["total", "succeeded", "failed", "results"],
+    ),
+    CommandSchema(
+        "catalog.saveMetadata",
+        "catalog.save-metadata",
+        "Write catalog metadata to each photo's file XMP (by ID or current selection). "
+        "Read-from-file is intentionally not exposed -- it would overwrite catalog edits.",
+        params=[
+            ParamSchema(
+                "photoIds",
+                ParamType.JSON_ARRAY,
+                description="Photo IDs; omit to use the current selection",
+            ),
+        ],
+        mutating=True,
+        timeout=120.0,
+        supports_dry_run=True,
+        response_fields=["total", "succeeded", "failed", "results"],
+    ),
+    CommandSchema(
         "catalog.createSmartCollection",
         "catalog.create-smart-collection",
         "Create a smart collection",

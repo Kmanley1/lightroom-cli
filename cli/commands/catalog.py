@@ -114,6 +114,7 @@ def get_flag(ctx, photo_id, **kwargs):
 @click.option("--file-format", help="File format (RAW/DNG/JPEG)")
 @click.option("--keyword", "keyword_filter", help="Keyword (substring match)")
 @click.option("--filename", help="Filename (substring match)")
+@click.option("--text", help="Free-text (substring across filename, title, caption)")
 @click.option("--limit", default=50, type=int, help="Max results")
 @click.option("--offset", default=0, type=int, help="Offset for pagination")
 @json_input_options
@@ -131,6 +132,7 @@ def find_photos(
     file_format,
     keyword_filter,
     filename,
+    text,
     limit,
     offset,
     **kwargs,
@@ -158,11 +160,14 @@ def find_photos(
         search_desc["keyword"] = keyword_filter
     if filename:
         search_desc["filename"] = filename
+    if text:
+        search_desc["text"] = text
 
     execute_command(
         ctx,
         "catalog.findPhotos",
         {"searchDesc": search_desc, "limit": limit, "offset": offset},
+        timeout=90.0,
     )
 
 
@@ -379,6 +384,50 @@ def remove_from_collection(ctx, collection_id, photo_ids, dry_run, **kwargs):
         {"collectionId": collection_id, "photoIds": list(photo_ids)},
         timeout=60.0,
     )
+
+
+@catalog.command("batch-set")
+@click.argument("photo_ids", nargs=-1, required=False)
+@click.option("--rating", type=int, default=None, help="Rating 0-5 (0 clears)")
+@click.option("--color-label", default=None, help="Color label (red/yellow/green/blue/purple/none)")
+@click.option("--flag", type=click.Choice(["pick", "reject", "none"]), default=None, help="Pick flag")
+@click.option("--title", default=None, help="Title, applied to every photo")
+@click.option("--caption", default=None, help="Caption, applied to every photo")
+@click.option("--keyword", "keywords", multiple=True, help="Keyword to add to every photo (repeatable)")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def batch_set(ctx, photo_ids, rating, color_label, flag, title, caption, keywords, dry_run, **kwargs):
+    """Set metadata fields across many photos at once (current selection if no IDs are given)."""
+    params = {}
+    if photo_ids:
+        params["photoIds"] = list(photo_ids)
+    if rating is not None:
+        params["rating"] = rating
+    if color_label:
+        params["colorLabel"] = color_label
+    if flag:
+        params["flag"] = {"pick": 1, "reject": -1, "none": 0}[flag]
+    if title is not None:
+        params["title"] = title
+    if caption is not None:
+        params["caption"] = caption
+    if keywords:
+        params["addKeywords"] = list(keywords)
+    execute_command(ctx, "catalog.batchSetMetadata", params, timeout=60.0)
+
+
+@catalog.command("save-metadata")
+@click.argument("photo_ids", nargs=-1, required=False)
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def save_metadata(ctx, photo_ids, dry_run, **kwargs):
+    """Save catalog metadata to each photo's file XMP (current selection if no IDs are given)."""
+    params = {}
+    if photo_ids:
+        params["photoIds"] = list(photo_ids)
+    execute_command(ctx, "catalog.saveMetadata", params, timeout=120.0)
 
 
 @catalog.command("create-smart-collection")

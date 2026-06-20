@@ -3,11 +3,11 @@
 > Generated from `lightroom_sdk/schema.py` via `lr docs reference`. Do not edit by hand --
 > regenerate after any schema change.
 
-**133 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
+**135 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
 
 ## Groups
 
-- [`catalog`](#catalog) -- 34 commands
+- [`catalog`](#catalog) -- 36 commands
 - [`develop`](#develop) -- 65 commands
 - [`export`](#export) -- 1 commands
 - [`plugin`](#plugin) -- 3 commands
@@ -55,6 +55,24 @@ Get formatted metadata for multiple photos
 | `keys` | json_array | yes |  | Array of metadata key names to retrieve |
 
 **Response fields:** `photos`, `keys`
+
+### `lr catalog batch-set`
+
+Set metadata fields (rating/colorLabel/flag/title/caption/keywords) across many photos in one transaction
+
+**MCP tool:** `lr_catalog_batch_set_metadata`  -  **bridge:** `catalog.batchSetMetadata`  -  **risk:** write  -  **timeout:** 60s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `photoIds` | json_array |  |  | Photo IDs; omit to use the current selection |
+| `rating` | integer |  |  | Rating 0-5 (0 clears) [min 0, max 5] |
+| `colorLabel` | string |  |  | Color label (red/yellow/green/blue/purple/none) |
+| `flag` | integer |  |  | Pick flag: 1 pick, -1 reject, 0 none [min -1, max 1] |
+| `title` | string |  |  | Title, applied to every photo |
+| `caption` | string |  |  | Caption, applied to every photo |
+| `addKeywords` | json_array |  |  | Keyword names to add to every photo |
+
+**Response fields:** `total`, `succeeded`, `failed`, `results`
 
 ### `lr catalog collection-photos`
 
@@ -299,6 +317,18 @@ Rotate selected photo right
 **MCP tool:** `lr_catalog_rotate_right`  -  **bridge:** `catalog.rotateRight`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
 
 _No parameters._
+
+### `lr catalog save-metadata`
+
+Write catalog metadata to each photo's file XMP (by ID or current selection). Read-from-file is intentionally not exposed -- it would overwrite catalog edits.
+
+**MCP tool:** `lr_catalog_save_metadata`  -  **bridge:** `catalog.saveMetadata`  -  **risk:** write  -  **timeout:** 120s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `photoIds` | json_array |  |  | Photo IDs; omit to use the current selection |
+
+**Response fields:** `total`, `succeeded`, `failed`, `results`
 
 ### `lr catalog search`
 

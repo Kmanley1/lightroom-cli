@@ -165,3 +165,46 @@ def test_catalog_create_collection_with_parent(mock_get_bridge, runner):
     mock_bridge.send_command.assert_called_once_with(
         "catalog.createCollection", {"name": "Japan", "returnExisting": False, "parentId": 3}, timeout=30.0
     )
+
+
+@patch("cli.helpers.get_bridge")
+def test_catalog_find_text(mock_get_bridge, runner):
+    """lr catalog find --text sends searchDesc.text (free-text search)."""
+    mock_bridge = AsyncMock()
+    mock_bridge.send_command.return_value = {"id": "x", "success": True, "result": {"photos": []}}
+    mock_get_bridge.return_value = mock_bridge
+    result = runner.invoke(cli, ["catalog", "find", "--text", "sunset"])
+    assert result.exit_code == 0
+    mock_bridge.send_command.assert_called_once_with(
+        "catalog.findPhotos", {"searchDesc": {"text": "sunset"}, "limit": 50, "offset": 0}, timeout=90.0
+    )
+
+
+@patch("cli.helpers.get_bridge")
+def test_catalog_batch_set(mock_get_bridge, runner):
+    """lr catalog batch-set maps fields (flag pick->1) and keywords across photos."""
+    mock_bridge = AsyncMock()
+    mock_bridge.send_command.return_value = {"id": "x", "success": True, "result": {}}
+    mock_get_bridge.return_value = mock_bridge
+    result = runner.invoke(
+        cli, ["catalog", "batch-set", "1", "2", "--rating", "5", "--flag", "pick", "--keyword", "vacation"]
+    )
+    assert result.exit_code == 0
+    mock_bridge.send_command.assert_called_once_with(
+        "catalog.batchSetMetadata",
+        {"photoIds": ["1", "2"], "rating": 5, "flag": 1, "addKeywords": ["vacation"]},
+        timeout=60.0,
+    )
+
+
+@patch("cli.helpers.get_bridge")
+def test_catalog_save_metadata(mock_get_bridge, runner):
+    """lr catalog save-metadata sends photoIds to catalog.saveMetadata."""
+    mock_bridge = AsyncMock()
+    mock_bridge.send_command.return_value = {"id": "x", "success": True, "result": {}}
+    mock_get_bridge.return_value = mock_bridge
+    result = runner.invoke(cli, ["catalog", "save-metadata", "1", "2"])
+    assert result.exit_code == 0
+    mock_bridge.send_command.assert_called_once_with(
+        "catalog.saveMetadata", {"photoIds": ["1", "2"]}, timeout=120.0
+    )

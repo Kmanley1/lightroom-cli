@@ -767,3 +767,48 @@ class TestMutateCollectionMembershipGuards:
         module["removePhotosFromCollection"](rt.eval("{ photoIds = {'1'} }"), lambda r: captured.append(r))
         assert len(captured) == 1
         assert captured[0]["error"]["code"] == "MISSING_PARAM"
+
+
+class TestBatchSetMetadataGuards:
+    """batchSetMetadata guards (no-field, bad rating, bad flag) fire before any catalog access."""
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    def _call(self, cat, lua_params):
+        rt, module = cat
+        captured = []
+        module["batchSetMetadata"](rt.eval(lua_params), lambda r: captured.append(r))
+        return captured
+
+    def test_no_field_errors(self, cat):
+        captured = self._call(cat, "{ photoIds = {'1'} }")
+        assert captured[0]["error"]["code"] == "INVALID_PARAM_VALUE"
+
+    def test_rating_out_of_range(self, cat):
+        captured = self._call(cat, "{ photoIds = {'1'}, rating = 9 }")
+        assert captured[0]["error"]["code"] == "INVALID_PARAM_VALUE"
+
+    def test_invalid_flag(self, cat):
+        captured = self._call(cat, "{ photoIds = {'1'}, flag = 5 }")
+        assert captured[0]["error"]["code"] == "INVALID_PARAM_VALUE"
+
+
+class TestTextFilterKnown:
+    """Free-text search: 'text' is a recognized filter key (not rejected by the fail-closed guard)."""
+
+    def _module(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    def test_text_is_known(self):
+        rt, module = self._module()
+        assert module["_unknownFilterKeys"](rt.table_from({"text": "x"})) is None
+
+    def test_unknown_still_flagged(self):
+        rt, module = self._module()
+        assert module["_unknownFilterKeys"](rt.table_from({"bogus": "x"})) is not None
