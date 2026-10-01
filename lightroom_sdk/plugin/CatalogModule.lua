@@ -1230,6 +1230,21 @@ function CatalogModule._findKeywordByName(keywords, name)
     return nil
 end
 
+-- Pure: find a keyword by its localIdentifier anywhere in the tree (incl. nested). Unit-testable.
+function CatalogModule._findKeywordById(keywords, id)
+    if type(keywords) ~= "table" or id == nil then return nil end
+    for _, kw in ipairs(keywords) do
+        if kw.localIdentifier == id then
+            return kw
+        end
+        if kw.getChildren then
+            local found = CatalogModule._findKeywordById(kw:getChildren(), id)
+            if found then return found end
+        end
+    end
+    return nil
+end
+
 function CatalogModule.addKeywords(params, callback)
     ensureLrModules()
     local logger = getLogger()
@@ -2064,6 +2079,126 @@ function CatalogModule.removeKeyword(params, callback)
         end, { timeout = 10 })
     end)
 
+    if opError then
+        callback(ErrorUtils.createError(opError.code, opError.message))
+    elseif writeSuccess and opResult then
+        callback(ErrorUtils.createSuccess(opResult))
+    else
+        callback(ErrorUtils.createError("OPERATION_FAILED", tostring(writeErr)))
+    end
+end
+
+-- Pure: return a keyword in `siblings`, other than `target`, whose name equals `newName` ignoring case.
+-- LrC enforces a unique (parent, lower-cased name) index on keywords, so renaming onto such a name would
+-- fail inside the write transaction. De-dating makes this likely ("2006_05_29 Wedding" -> "Wedding"). Unit-testable.
+function CatalogModule._findSiblingNameClash(siblings, target, newName)
+    if type(siblings) ~= "table" or type(newName) ~= "string" then return nil end
+    local want = newName:lower()
+    local targetId = target and target.localIdentifier
+    for _, kw in ipairs(siblings) do
+        if kw.localIdentifier ~= targetId then
+            local name = kw:getName()
+            if type(name) == "string" and name:lower() == want then
+                return kw
+            end
+        end
+    end
+    return nil
+end
+
+-- Rename a keyword by its localIdentifier. Renaming via setAttributes keeps the same
+-- keyword object, so its photo links and face links are untouched -- only the name string
+-- changes. Synonyms are read first and passed back so they are preserved. Catalog only:
+-- the files' XMP picks up the new name on Save Metadata (Ctrl+S in LrC).
+function CatalogModule.renameKeyword(params, callback)
+    ensureLrModules()
+    params = params or {}
+    if params.keywordId == nil or params.newName == nil then
+        callback(ErrorUtils.createError("MISSING_PARAM", "keywordId and newName are required"))
+        return
+    end
+    local keywordId = tonumber(params.keywordId)
+    if not keywordId then
+        callback(ErrorUtils.createError("INVALID_PARAM", "keywordId must be a number"))
+        return
+    end
+    local newName = params.newName
+    if type(newName) ~= "string" or newName:match("^%s*$") or newName:find("[\r\n\t]")
+        or newName:find("^%s") or newName:find("%s$") then
+        callback(ErrorUtils.createError("INVALID_PARAM_VALUE",
+            "newName must be non-blank, without leading/trailing spaces, tabs or line breaks"))
+        return
+    end
+    local catalog = LrApplication.activeCatalog()
+    local opResult, opError = nil, nil
+    local writeSuccess, writeErr = ErrorUtils.safeCall(function()
+        -- 1. Resolve the keyword, its synonyms, and any sibling already holding newName (read txn).
+        local target, oldName, synonyms, clash
+        catalog:withReadAccessDo(function()
+            target = CatalogModule._findKeywordById(catalog:getKeywords(), keywordId)
+            if target then
+                oldName = target:getName()
+                synonyms = target:getSynonyms()
+                local parent = target:getParent()  -- [SDK-VERIFY] nil (or the hidden root) for a top-level keyword
+                local siblings
+                if parent then
+                    siblings = parent:getChildren()
+                else
+                    siblings = catalog:getKeywords()
+                end
+                clash = CatalogModule._findSiblingNameClash(siblings, target, newName)
+            end
+        end)
+        if not target then
+            opError = { code = "KEYWORD_NOT_FOUND", message = "Keyword id " .. tostring(keywordId) .. " not found" }
+            return
+        end
+        if oldName == newName then
+            opResult = { keywordId = keywordId, oldName = oldName, newName = newName, message = "No change (name already matches)" }
+            return
+        end
+        if clash then
+            opError = {
+                code = "KEYWORD_EXISTS",
+                message = "A sibling keyword is already named '" .. tostring(clash:getName())
+                    .. "' (id " .. tostring(clash.localIdentifier) .. ")",
+            }
+            return
+        end
+        -- 2. Rename via setAttributes; pass synonyms back so they are preserved (write txn). `written` is set
+        --    INSIDE the closure so a write that never runs (lock timeout) cannot report success.
+        local attrs = { keywordName = newName }
+        if synonyms ~= nil then attrs.synonyms = synonyms end
+        local written = false
+        catalog:withWriteAccessDo("Rename Keyword", function()
+            target:setAttributes(attrs)
+            written = true
+        end, { timeout = 15 })
+        if not written then
+            opError = { code = "OPERATION_FAILED", message = "Rename did not run (catalog busy or write timed out)" }
+            return
+        end
+        -- 3. Read back the stored name in its own safeCall + read txn: the write already committed, so a failed
+        --    read must not turn it into an error (verified = false), and a name LrC did not store must not
+        --    report success.
+        local storedName = nil
+        ErrorUtils.safeCall(function()
+            catalog:withReadAccessDo(function()
+                storedName = target:getName()
+            end)
+        end)
+        if storedName ~= nil and storedName ~= newName then
+            opError = { code = "OPERATION_FAILED", message = "Rename did not take: stored name is '" .. tostring(storedName) .. "'" }
+            return
+        end
+        opResult = {
+            keywordId = keywordId,
+            oldName = oldName,
+            newName = storedName or newName,
+            verified = storedName ~= nil,
+            message = "Keyword renamed",
+        }
+    end)
     if opError then
         callback(ErrorUtils.createError(opError.code, opError.message))
     elseif writeSuccess and opResult then

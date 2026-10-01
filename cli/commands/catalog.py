@@ -491,6 +491,17 @@ def remove_keyword(ctx, photo_id, keyword, dry_run, **kwargs):
     execute_command(ctx, "catalog.removeKeyword", {"photoId": photo_id, "keyword": keyword})
 
 
+@catalog.command("rename-keyword")
+@click.argument("keyword_id")
+@click.argument("new_name")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def rename_keyword(ctx, keyword_id, new_name, dry_run, **kwargs):
+    """Rename a keyword by id (keeps its photos, faces, and synonyms; catalog only -- Save Metadata writes files)"""
+    execute_command(ctx, "catalog.renameKeyword", {"keywordId": keyword_id, "newName": new_name})
+
+
 @catalog.command("set-view-filter")
 @click.option("--filter", "filter_json", required=True, help="JSON filter descriptor")
 @click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")

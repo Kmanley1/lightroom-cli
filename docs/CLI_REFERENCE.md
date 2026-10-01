@@ -3,11 +3,11 @@
 > Generated from `lightroom_sdk/schema.py` via `lr docs reference`. Do not edit by hand --
 > regenerate after any schema change.
 
-**142 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
+**143 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
 
 ## Groups
 
-- [`catalog`](#catalog) -- 37 commands
+- [`catalog`](#catalog) -- 38 commands
 - [`develop`](#develop) -- 71 commands
 - [`export`](#export) -- 1 commands
 - [`plugin`](#plugin) -- 3 commands
@@ -313,6 +313,17 @@ Remove keyword from a photo
 |---|---|---|---|---|
 | `photoId` | string | yes |  | Photo ID (obtain via catalog list or get-selected) |
 | `keyword` | string | yes |  | Keyword string to remove |
+
+### `lr catalog rename-keyword`
+
+Rename a keyword by id (keeps its photos, faces, and synonyms; catalog only -- Save Metadata writes files)
+
+**MCP tool:** `lr_catalog_rename_keyword`  -  **bridge:** `catalog.renameKeyword`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `keywordId` | string | yes |  | Keyword localIdentifier (AgLibraryKeyword.id_local; `catalog keywords` lists top-level ids only) |
+| `newName` | string | yes |  | New keyword name (non-blank; must not match a sibling keyword, ignoring case) |
 
 ### `lr catalog rotate-left`
 

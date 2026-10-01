@@ -1667,6 +1667,29 @@ _register(
         supports_dry_run=True,
     ),
     CommandSchema(
+        "catalog.renameKeyword",
+        "catalog.rename-keyword",
+        "Rename a keyword by id (keeps its photos, faces, and synonyms; catalog only -- Save Metadata writes files)",
+        params=[
+            ParamSchema(
+                "keywordId",
+                ParamType.STRING,
+                required=True,
+                description=(
+                    "Keyword localIdentifier (AgLibraryKeyword.id_local; `catalog keywords` lists top-level ids only)"
+                ),
+            ),
+            ParamSchema(
+                "newName",
+                ParamType.STRING,
+                required=True,
+                description="New keyword name (non-blank; must not match a sibling keyword, ignoring case)",
+            ),
+        ],
+        mutating=True,
+        supports_dry_run=True,
+    ),
+    CommandSchema(
         "catalog.removeKeyword",
         "catalog.remove-keyword",
         "Remove keyword from a photo",

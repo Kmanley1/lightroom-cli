@@ -448,6 +448,208 @@ class TestAddKeywordsFindsExistingKeyword:
         assert module["_findKeywordByName"](rt.eval("{}"), "x") is None
 
 
+class TestFindKeywordById:
+    """De-date renames target a keyword by its localIdentifier (names can collide). The pure
+    ``_findKeywordById`` helper resolves the keyword object recursively so renameKeyword
+    renames exactly the intended one -- including nested date-event keywords.
+    """
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    # Keyword mocks expose .localIdentifier (a property) and :getChildren().
+    _KW = """
+        local function kw(id, name, children)
+            return {
+                localIdentifier = id,
+                getName = function(self) return name end,
+                getChildren = function(self) return children end,
+            }
+        end
+        tree = { kw(10, '2006_05_29 HoneyMoon'), kw(20, 'People', { kw(30, 'Carolyn'), kw(40, 'Ken') }) }
+    """
+
+    def _tree(self, cat):
+        rt, module = cat
+        rt.execute(self._KW)
+        return module, rt.eval("tree")
+
+    def test_finds_top_level_by_id(self, cat):
+        module, tree = self._tree(cat)
+        found = module["_findKeywordById"](tree, 10)
+        assert found is not None
+        assert found["getName"](found) == "2006_05_29 HoneyMoon"
+
+    def test_finds_nested_by_id(self, cat):
+        module, tree = self._tree(cat)
+        found = module["_findKeywordById"](tree, 30)
+        assert found is not None
+        assert found["getName"](found) == "Carolyn"
+
+    def test_missing_id_returns_nil(self, cat):
+        module, tree = self._tree(cat)
+        assert module["_findKeywordById"](tree, 999) is None
+
+    def test_nil_and_empty_are_safe(self, cat):
+        rt, module = cat
+        assert module["_findKeywordById"](None, 1) is None
+        assert module["_findKeywordById"](rt.eval("{}"), 1) is None
+
+
+class TestRenameKeywordHandler:
+    """renameKeyword guards its params, refuses a sibling-name clash (LrC's unique parent + lower-cased name
+    index), and never reports success for a write that did not run -- a lock timeout returns without running
+    the closure. The LR SDK ``import`` is overridden to hand back a stub catalog and a real-pcall LrTasks.
+    """
+
+    _STUB = """
+        unpack = unpack or table.unpack
+        calls = { set = 0, attrs = nil }
+        write_mode = 'run'      -- 'abort': withWriteAccessDo returns without running the closure
+        store_name = true       -- false: setAttributes runs but LrC keeps the old name
+        reads = 0
+        read_fail_from = nil    -- n: the nth and later read transactions throw
+        local function kw(id, name, children)
+            local k = { localIdentifier = id, _name = name, _children = children or {} }
+            function k:getName() return self._name end
+            function k:getSynonyms() return { 'syn-' .. self._name } end
+            function k:getChildren() return self._children end
+            function k:getParent() return self._parent end
+            function k:setAttributes(a)
+                calls.set = calls.set + 1
+                calls.attrs = a
+                if store_name then self._name = a.keywordName end
+            end
+            for _, c in ipairs(k._children) do c._parent = k end
+            return k
+        end
+        local events = kw(20, 'Events', { kw(21, '2006_05_29 Wedding'), kw(22, 'Wedding') })
+        TOP = { kw(10, '2006_05_29 HoneyMoon'), kw(11, 'honeymoon'), events }
+        CATALOG = {}
+        function CATALOG:getKeywords() return TOP end
+        function CATALOG:withReadAccessDo(fn)
+            reads = reads + 1
+            if read_fail_from and reads >= read_fail_from then error('read busy') end
+            fn()
+        end
+        function CATALOG:withWriteAccessDo(_name, fn, _opts)
+            if write_mode == 'abort' then return 'aborted' end
+            fn()
+            return 'executed'
+        end
+        local real_import = import
+        function import(name)
+            if name == 'LrApplication' then return { activeCatalog = function() return CATALOG end } end
+            if name == 'LrTasks' then return { pcall = pcall, sleep = function() end } end
+            return real_import(name)
+        end
+    """
+
+    @pytest.fixture
+    def cat(self):
+        rt = _make_runtime()
+        rt.execute(self._STUB)
+        rt.execute("_G.LightroomPythonBridge = { ErrorUtils = require('ErrorUtils') }")
+        return rt, _load(rt, "CatalogModule")
+
+    def _rename(self, cat, params):
+        rt, module = cat
+        captured = []
+        module["renameKeyword"](rt.table_from(params), lambda r: captured.append(r))
+        assert len(captured) == 1  # always exactly one response
+        return captured[0], rt.eval("calls")
+
+    def test_missing_params(self, cat):
+        resp, _ = self._rename(cat, {"newName": "x"})
+        assert resp["error"]["code"] == "MISSING_PARAM"
+        resp, _ = self._rename(cat, {"keywordId": 21})
+        assert resp["error"]["code"] == "MISSING_PARAM"
+
+    def test_non_numeric_id(self, cat):
+        resp, _ = self._rename(cat, {"keywordId": "abc", "newName": "x"})
+        assert resp["error"]["code"] == "INVALID_PARAM"
+
+    @pytest.mark.parametrize("bad", ["", "   ", "a\nb", "a\tb", "a\rb", " Wedding", "Wedding "])
+    def test_blank_or_control_char_name(self, cat, bad):
+        resp, calls = self._rename(cat, {"keywordId": 21, "newName": bad})
+        assert resp["error"]["code"] == "INVALID_PARAM_VALUE"
+        assert calls["set"] == 0
+
+    def test_unknown_id(self, cat):
+        resp, calls = self._rename(cat, {"keywordId": 999, "newName": "x"})
+        assert resp["error"]["code"] == "KEYWORD_NOT_FOUND"
+        assert calls["set"] == 0
+
+    def test_same_name_is_a_no_op(self, cat):
+        resp, calls = self._rename(cat, {"keywordId": "22", "newName": "Wedding"})
+        assert resp["success"] is True
+        assert resp["result"]["message"].startswith("No change")
+        assert calls["set"] == 0
+
+    def test_top_level_clash_ignores_case(self, cat):
+        resp, calls = self._rename(cat, {"keywordId": 10, "newName": "HONEYMOON"})
+        assert resp["error"]["code"] == "KEYWORD_EXISTS"
+        assert "(id 11)" in resp["error"]["message"]
+        assert calls["set"] == 0
+
+    def test_nested_clash_checks_siblings(self, cat):
+        # The de-dating case: "2006_05_29 Wedding" -> "wedding" collides with sibling "Wedding".
+        resp, calls = self._rename(cat, {"keywordId": 21, "newName": "wedding"})
+        assert resp["error"]["code"] == "KEYWORD_EXISTS"
+        assert calls["set"] == 0
+
+    def test_case_only_rename_of_itself_is_allowed(self, cat):
+        resp, calls = self._rename(cat, {"keywordId": 22, "newName": "WEDDING"})
+        assert resp["success"] is True
+        assert calls["set"] == 1
+
+    def test_rename_preserves_synonyms_and_reads_back(self, cat):
+        resp, calls = self._rename(cat, {"keywordId": "21", "newName": "Wedding 2006"})
+        assert resp["success"] is True
+        assert resp["result"]["oldName"] == "2006_05_29 Wedding"
+        assert resp["result"]["newName"] == "Wedding 2006"
+        assert calls["set"] == 1
+        assert resp["result"]["verified"] is True
+        assert calls["attrs"]["keywordName"] == "Wedding 2006"
+        assert calls["attrs"]["synonyms"][1] == "syn-2006_05_29 Wedding"
+
+    def test_write_that_never_ran_is_not_success(self, cat):
+        # Regression: the result used to be set AFTER withWriteAccessDo returned, so an aborted write
+        # (closure never ran) reported "Keyword renamed" with nothing written.
+        rt, _ = cat
+        rt.execute("write_mode = 'abort'")
+        resp, calls = self._rename(cat, {"keywordId": 21, "newName": "Wedding 2006"})
+        assert resp["success"] is not True
+        assert resp["error"]["code"] == "OPERATION_FAILED"
+        assert "did not run" in resp["error"]["message"]
+        assert calls["set"] == 0
+
+    def test_name_lrc_did_not_store_is_not_success(self, cat):
+        # The read-back must COMPARE, not echo: setAttributes ran but the stored name is unchanged.
+        rt, _ = cat
+        rt.execute("store_name = false")
+        resp, calls = self._rename(cat, {"keywordId": 21, "newName": "Wedding 2006"})
+        assert resp["success"] is not True
+        assert resp["error"]["code"] == "OPERATION_FAILED"
+        assert "did not take" in resp["error"]["message"]
+        assert "2006_05_29 Wedding" in resp["error"]["message"]
+        assert calls["set"] == 1
+
+    def test_failed_read_back_does_not_hide_a_committed_rename(self, cat):
+        # Reads: 1 = resolve, 2 = read-back. A busy read-back after a committed write is still a success,
+        # flagged unverified -- not an error that invites a confused retry.
+        rt, _ = cat
+        rt.execute("read_fail_from = 2")
+        resp, calls = self._rename(cat, {"keywordId": 21, "newName": "Wedding 2006"})
+        assert resp["success"] is True
+        assert resp["result"]["verified"] is False
+        assert resp["result"]["newName"] == "Wedding 2006"
+        assert calls["set"] == 1
+
+
 class TestCollectKeywordsMatching:
     """findPhotos resolves keyword searches via the keyword index (#9). The pure matcher
     collects every keyword whose name contains the substring (case-insensitive, recursive);
