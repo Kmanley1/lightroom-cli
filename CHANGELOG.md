@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.1] - 2026-10-01
+
+### Added
+- **`catalog collections` now reports each collection's `parentId` / `parentName`** (nil for a
+  top-level collection). Previously only `{id, name, type}` — there was no way to tell from the
+  CLI whether a collection was nested inside a collection set, only by looking at Lightroom's own
+  panel. Verified live: correctly reported four real collections as nested under a named trip
+  sub-set ("2026_04 Chicago Spring Break") after a manual drag-and-drop in Lightroom.
+
 ## [1.3.0] - 2026-10-01
 
 Collection management: rename, delete, and nested collection sets.

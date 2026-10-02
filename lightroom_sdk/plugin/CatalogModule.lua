@@ -957,6 +957,17 @@ function CatalogModule.getCollections(params, callback)
                     name = collection:getName(),
                     type = collection:type(),
                 }
+                -- [SDK-VERIFY] LrCollection:getParent() -- mirrors the folder:getParent() pattern
+                -- already used elsewhere in this module; nil parent means top-level (not inside
+                -- any collection set). First live call is the real verification.
+                local parent = collection:getParent()
+                if parent then
+                    entry.parentId = parent.localIdentifier
+                    entry.parentName = parent:getName()
+                else
+                    entry.parentId = nil
+                    entry.parentName = nil
+                end
                 if includePhotoCounts then
                     entry.photoCount = #collection:getPhotos()
                 end
