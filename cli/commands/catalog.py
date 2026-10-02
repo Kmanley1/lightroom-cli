@@ -462,12 +462,35 @@ def create_smart_collection(ctx, name, search_desc, dry_run, **kwargs):
 
 @catalog.command("create-collection-set")
 @click.argument("name")
+@click.option("--parent", type=int, default=None, help="Parent collection-set ID to nest this set under")
 @click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
 @json_input_options
 @click.pass_context
-def create_collection_set(ctx, name, dry_run, **kwargs):
+def create_collection_set(ctx, name, parent, dry_run, **kwargs):
     """Create a collection set"""
-    execute_command(ctx, "catalog.createCollectionSet", {"name": name})
+    params = {"name": name}
+    if parent is not None:
+        params["parentId"] = parent
+    execute_command(ctx, "catalog.createCollectionSet", params)
+
+
+@catalog.command("rename-collection")
+@click.argument("collection_id", type=int)
+@click.argument("new_name")
+@json_input_options
+@click.pass_context
+def rename_collection(ctx, collection_id, new_name, **kwargs):
+    """Rename an existing collection by id"""
+    execute_command(ctx, "catalog.renameCollection", {"collectionId": collection_id, "newName": new_name})
+
+
+@catalog.command("delete-collection")
+@click.argument("collection_id", type=int)
+@json_input_options
+@click.pass_context
+def delete_collection(ctx, collection_id, **kwargs):
+    """Delete a collection or collection set by id (does not touch member photos)"""
+    execute_command(ctx, "catalog.deleteCollection", {"collectionId": collection_id})
 
 
 @catalog.command("create-keyword")

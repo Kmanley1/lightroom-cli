@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-10-01
+
+Collection management: rename, delete, and nested collection sets.
+
+### Added
+- **`catalog rename-collection <id> <new_name>`** — rename an existing collection. Not previously
+  possible via this CLI at all (not just an unexposed flag — the capability didn't exist).
+- **`catalog delete-collection <id>`** — delete a collection or collection set by id (tries
+  collection first, falls back to collection set). Never touches member photos — same scope as
+  Lightroom's own right-click Delete on a collection.
+- **`catalog create-collection-set --parent <id>`** — collection sets can now nest inside other
+  collection sets, mirroring how `create-collection --parent` already worked for plain collections.
+  `create-collection-set` previously hardcoded its parent to `nil` in the Lua implementation, so no
+  CLI flag could have made this work before now.
+
+### Fixed
+- **`catalog create-collection-set` now returns the new set's `id`.** It previously returned only
+  `{name, message}` — there was no way to reference a freshly created set as a `--parent` for
+  anything, including the new nesting feature above.
+
+All three verified live: created a throwaway nested collection set, confirmed visually in Lightroom's
+Collections panel (not just trusting the API response), renamed a test collection and independently
+re-queried it to confirm the name actually persisted, then deleted all test artifacts and confirmed
+zero remained via a fresh catalog-wide query.
+
 ## [1.2.2] - 2026-04-06
 
 ### Fixed

@@ -1639,17 +1639,46 @@ _register(
     CommandSchema(
         "catalog.createCollectionSet",
         "catalog.create-collection-set",
-        "Create a collection set",
+        "Create a collection set (returns the new set's id)",
         params=[
             ParamSchema(
                 "name",
                 ParamType.STRING,
                 required=True,
                 description="Collection set name",
-            )
+            ),
+            ParamSchema(
+                "parentId",
+                ParamType.INTEGER,
+                description="Parent collection-set id to nest under (top-level if omitted)",
+            ),
         ],
         mutating=True,
         supports_dry_run=True,
+        response_fields=["id", "name"],
+    ),
+    CommandSchema(
+        "catalog.renameCollection",
+        "catalog.rename-collection",
+        "Rename an existing collection by id",
+        params=[
+            ParamSchema("collectionId", ParamType.INTEGER, required=True, description="Collection id to rename"),
+            ParamSchema("newName", ParamType.STRING, required=True, description="New collection name"),
+        ],
+        mutating=True,
+        supports_dry_run=False,
+        response_fields=["id", "oldName", "newName"],
+    ),
+    CommandSchema(
+        "catalog.deleteCollection",
+        "catalog.delete-collection",
+        "Delete a collection or collection set by id (does not touch member photos)",
+        params=[
+            ParamSchema("collectionId", ParamType.INTEGER, required=True, description="Collection or collection-set id to delete"),
+        ],
+        mutating=True,
+        supports_dry_run=False,
+        response_fields=["id", "name", "type"],
     ),
     CommandSchema(
         "catalog.createKeyword",

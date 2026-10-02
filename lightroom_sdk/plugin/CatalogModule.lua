@@ -2009,13 +2009,124 @@ function CatalogModule.createCollectionSet(params, callback)
         return
     end
     local catalog = LrApplication.activeCatalog()
+    local opError = nil
+    local newSet = nil
     local success, err = ErrorUtils.safeCall(function()
         catalog:withWriteAccessDo("Create Collection Set", function()
-            catalog:createCollectionSet(name, nil, true)
+            local parent = nil
+            if params.parentId then
+                parent = CatalogModule._findCollectionSetById(catalog, tonumber(params.parentId))
+                if not parent then
+                    opError = { code = "PHOTO_NOT_FOUND", message = "Parent collection set not found: " .. tostring(params.parentId) }
+                    return
+                end
+            end
+            newSet = catalog:createCollectionSet(name, parent, true)
         end, { timeout = 10 })
     end)
+    if opError then
+        callback(ErrorUtils.createError(opError.code, opError.message))
+        return
+    end
+    if not success then
+        callback(ErrorUtils.createError("OPERATION_FAILED", tostring(err)))
+        return
+    end
+    -- Read the new set's id AFTER the write txn commits -- same restriction as createCollection
+    -- (reading a just-created item's info inside the same withWriteAccessDo is forbidden by the SDK).
+    local setId = nil
+    if newSet then
+        ErrorUtils.safeCall(function()
+            catalog:withReadAccessDo(function()
+                setId = newSet.localIdentifier
+            end)
+        end)
+    end
+    callback(ErrorUtils.createSuccess({ id = setId, name = name, message = "Collection set created" }))
+end
+
+-- Rename an existing collection (not a collection set) by id.
+-- [SDK-VERIFY] LrCollection:setName() -- standard accessor per Adobe's Lua SDK; not previously
+-- exercised anywhere in this plugin, so treat the first live call as the real verification.
+function CatalogModule.renameCollection(params, callback)
+    ensureLrModules()
+    local collectionId = tonumber(params.collectionId)
+    local newName = params.newName
+    if not collectionId then
+        callback(ErrorUtils.createError("MISSING_PARAM", "collectionId is required"))
+        return
+    end
+    if not newName or newName == "" then
+        callback(ErrorUtils.createError("MISSING_PARAM", "newName is required"))
+        return
+    end
+    local catalog = LrApplication.activeCatalog()
+    local opError = nil
+    local oldName = nil
+    local success, err = ErrorUtils.safeCall(function()
+        catalog:withWriteAccessDo("Rename Collection", function()
+            local coll = CatalogModule._findCollectionById(catalog, collectionId)
+            if not coll then
+                opError = { code = "PHOTO_NOT_FOUND", message = "Collection not found: " .. tostring(collectionId) }
+                return
+            end
+            oldName = coll:getName()
+            coll:setName(newName)
+        end, { timeout = 10 })
+    end)
+    if opError then
+        callback(ErrorUtils.createError(opError.code, opError.message))
+        return
+    end
     if success then
-        callback(ErrorUtils.createSuccess({ name = name, message = "Collection set created" }))
+        callback(ErrorUtils.createSuccess({ id = collectionId, oldName = oldName, newName = newName, message = "Collection renamed" }))
+    else
+        callback(ErrorUtils.createError("OPERATION_FAILED", tostring(err)))
+    end
+end
+
+-- Delete a collection OR a collection set by id (tries collection first, falls back to set).
+-- [SDK-VERIFY] LrCollection:delete() / LrCollectionSet:delete() -- standard per Adobe's Lua SDK;
+-- distinct from removing a PHOTO from the catalog, which the SDK genuinely does not support (see
+-- removeFromCatalog above, verified 2026-06-12). Deleting the organizational collection itself
+-- (not the photos inside it) is a different, supported operation. Not previously exercised anywhere
+-- in this plugin, so treat the first live call as the real verification. A collection's member
+-- photos are never touched -- this only removes the collection/set, same as Lightroom's own
+-- right-click Delete on a collection.
+function CatalogModule.deleteCollection(params, callback)
+    ensureLrModules()
+    local itemId = tonumber(params.collectionId)
+    if not itemId then
+        callback(ErrorUtils.createError("MISSING_PARAM", "collectionId is required"))
+        return
+    end
+    local catalog = LrApplication.activeCatalog()
+    local opError = nil
+    local deletedName = nil
+    local deletedType = nil
+    local success, err = ErrorUtils.safeCall(function()
+        catalog:withWriteAccessDo("Delete Collection", function()
+            local item = CatalogModule._findCollectionById(catalog, itemId)
+            local itemType = "collection"
+            if not item then
+                item = CatalogModule._findCollectionSetById(catalog, itemId)
+                itemType = "collection set"
+            end
+            if not item then
+                opError = { code = "PHOTO_NOT_FOUND", message = "Collection or collection set not found: " .. tostring(itemId) }
+                return
+            end
+            deletedName = item:getName()
+            deletedType = itemType
+            item:delete()
+        end, { timeout = 10 })
+    end)
+    if opError then
+        callback(ErrorUtils.createError(opError.code, opError.message))
+        return
+    end
+    if success then
+        callback(ErrorUtils.createSuccess({ id = itemId, name = deletedName, type = deletedType, message = "Deleted" }))
     else
         callback(ErrorUtils.createError("OPERATION_FAILED", tostring(err)))
     end
