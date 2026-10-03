@@ -2228,10 +2228,18 @@ function CatalogModule._findSiblingNameClash(siblings, target, newName)
     return nil
 end
 
+-- Pure: the temporary name a case-only rename passes through. It must differ from the target ignoring case,
+-- or LrC would ignore the first write too. Unit-testable.
+function CatalogModule._caseOnlyTempName(newName)
+    return newName .. " (rename in progress)"
+end
+
 -- Rename a keyword by its localIdentifier. Renaming via setAttributes keeps the same
 -- keyword object, so its photo links and face links are untouched -- only the name string
 -- changes. Synonyms are read first and passed back so they are preserved. Catalog only:
 -- the files' XMP picks up the new name on Save Metadata (Ctrl+S in LrC).
+-- LrC silently ignores a CASE-ONLY change (it compares with the stored lower-cased name; proven live
+-- 2026-10-01), so a case-only rename goes through a temporary name in two writes.
 function CatalogModule.renameKeyword(params, callback)
     ensureLrModules()
     params = params or {}
@@ -2253,9 +2261,16 @@ function CatalogModule.renameKeyword(params, callback)
     end
     local catalog = LrApplication.activeCatalog()
     local opResult, opError = nil, nil
+    local tempName = CatalogModule._caseOnlyTempName(newName)
+    -- Set once a case-only rename's first write (to tempName) has committed, so ANY later failure -- a write
+    -- that never runs OR one that throws -- tells the caller the keyword is parked under tempName.
+    local halfway = false
+    local halfwayHint = "case-only rename stopped halfway: the keyword is now named '" .. tempName
+        .. "'. Re-run the same rename to finish it."
     local writeSuccess, writeErr = ErrorUtils.safeCall(function()
-        -- 1. Resolve the keyword, its synonyms, and any sibling already holding newName (read txn).
-        local target, oldName, synonyms, clash
+        -- 1. Resolve the keyword, its synonyms, and any sibling already holding newName -- or, for a case-only
+        --    rename, the temporary name (read txn).
+        local target, oldName, synonyms, clash, tempClash
         catalog:withReadAccessDo(function()
             target = CatalogModule._findKeywordById(catalog:getKeywords(), keywordId)
             if target then
@@ -2269,6 +2284,7 @@ function CatalogModule.renameKeyword(params, callback)
                     siblings = catalog:getKeywords()
                 end
                 clash = CatalogModule._findSiblingNameClash(siblings, target, newName)
+                tempClash = CatalogModule._findSiblingNameClash(siblings, target, tempName)
             end
         end)
         if not target then
@@ -2287,19 +2303,43 @@ function CatalogModule.renameKeyword(params, callback)
             }
             return
         end
-        -- 2. Rename via setAttributes; pass synonyms back so they are preserved (write txn). `written` is set
-        --    INSIDE the closure so a write that never runs (lock timeout) cannot report success.
-        local attrs = { keywordName = newName }
-        if synonyms ~= nil then attrs.synonyms = synonyms end
-        local written = false
-        catalog:withWriteAccessDo("Rename Keyword", function()
-            target:setAttributes(attrs)
-            written = true
-        end, { timeout = 15 })
-        if not written then
-            opError = { code = "OPERATION_FAILED", message = "Rename did not run (catalog busy or write timed out)" }
+        local caseOnly = oldName:lower() == newName:lower()
+        if caseOnly and tempClash then
+            opError = {
+                code = "KEYWORD_EXISTS",
+                message = "Case-only rename needs the temporary name '" .. tempName .. "', but a sibling has it (id "
+                    .. tostring(tempClash.localIdentifier) .. ")",
+            }
             return
         end
+        -- 2. Rename via setAttributes; pass synonyms back so they are preserved (write txn). `written` is set
+        --    INSIDE the closure so a write that never runs (lock timeout) cannot report success.
+        local function writeName(name, actionName)
+            local attrs = { keywordName = name }
+            if synonyms ~= nil then attrs.synonyms = synonyms end
+            local written = false
+            catalog:withWriteAccessDo(actionName, function()
+                target:setAttributes(attrs)
+                written = true
+            end, { timeout = 15 })
+            return written
+        end
+        if caseOnly then
+            if not writeName(tempName, "Rename Keyword (1/2)") then
+                opError = { code = "OPERATION_FAILED", message = "Rename did not run (catalog busy or write timed out)" }
+                return
+            end
+            halfway = true
+        end
+        if not writeName(newName, caseOnly and "Rename Keyword (2/2)" or "Rename Keyword") then
+            if caseOnly then
+                opError = { code = "OPERATION_FAILED", message = "Write 2 of 2 did not run: " .. halfwayHint }
+            else
+                opError = { code = "OPERATION_FAILED", message = "Rename did not run (catalog busy or write timed out)" }
+            end
+            return
+        end
+        halfway = false
         -- 3. Read back the stored name in its own safeCall + read txn: the write already committed, so a failed
         --    read must not turn it into an error (verified = false), and a name LrC did not store must not
         --    report success.
@@ -2326,7 +2366,9 @@ function CatalogModule.renameKeyword(params, callback)
     elseif writeSuccess and opResult then
         callback(ErrorUtils.createSuccess(opResult))
     else
-        callback(ErrorUtils.createError("OPERATION_FAILED", tostring(writeErr)))
+        local message = tostring(writeErr)
+        if halfway then message = message .. " -- " .. halfwayHint end
+        callback(ErrorUtils.createError("OPERATION_FAILED", message))
     end
 end
 

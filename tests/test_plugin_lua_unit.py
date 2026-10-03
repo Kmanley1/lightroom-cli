@@ -507,13 +507,18 @@ class TestRenameKeywordHandler:
 
     _STUB = """
         unpack = unpack or table.unpack
-        calls = { set = 0, attrs = nil }
+        calls = { set = 0, attrs = nil, names = {} }
         write_mode = 'run'      -- 'abort': withWriteAccessDo returns without running the closure
+        abort_from = nil        -- n: the nth and later write transactions abort (closure never runs)
+        throw_from = nil        -- n: the nth and later write transactions throw (e.g. a lock timeout raised)
+        writes = 0
         store_name = true       -- false: setAttributes runs but LrC keeps the old name
         reads = 0
         read_fail_from = nil    -- n: the nth and later read transactions throw
-        local function kw(id, name, children)
-            local k = { localIdentifier = id, _name = name, _children = children or {} }
+        -- Models real LrC (proven live 2026-10-01): setAttributes{keywordName=} compares the new name with the
+        -- stored lower-cased name (lc_name) and silently ignores a case-only change. _lc can be made stale.
+        function mkkw(id, name, children)
+            local k = { localIdentifier = id, _name = name, _lc = name:lower(), _children = children or {} }
             function k:getName() return self._name end
             function k:getSynonyms() return { 'syn-' .. self._name } end
             function k:getChildren() return self._children end
@@ -521,13 +526,19 @@ class TestRenameKeywordHandler:
             function k:setAttributes(a)
                 calls.set = calls.set + 1
                 calls.attrs = a
-                if store_name then self._name = a.keywordName end
+                table.insert(calls.names, a.keywordName)
+                if store_name and a.keywordName:lower() ~= self._lc then
+                    self._name = a.keywordName
+                    self._lc = a.keywordName:lower()
+                end
             end
             for _, c in ipairs(k._children) do c._parent = k end
             return k
         end
+        local kw = mkkw
         local events = kw(20, 'Events', { kw(21, '2006_05_29 Wedding'), kw(22, 'Wedding') })
         TOP = { kw(10, '2006_05_29 HoneyMoon'), kw(11, 'honeymoon'), events }
+        EVENTS = events
         CATALOG = {}
         function CATALOG:getKeywords() return TOP end
         function CATALOG:withReadAccessDo(fn)
@@ -536,7 +547,9 @@ class TestRenameKeywordHandler:
             fn()
         end
         function CATALOG:withWriteAccessDo(_name, fn, _opts)
-            if write_mode == 'abort' then return 'aborted' end
+            writes = writes + 1
+            if throw_from and writes >= throw_from then error('write lock timeout') end
+            if write_mode == 'abort' or (abort_from and writes >= abort_from) then return 'aborted' end
             fn()
             return 'executed'
         end
@@ -601,10 +614,78 @@ class TestRenameKeywordHandler:
         assert resp["error"]["code"] == "KEYWORD_EXISTS"
         assert calls["set"] == 0
 
-    def test_case_only_rename_of_itself_is_allowed(self, cat):
+    def test_case_only_rename_goes_through_a_temporary_name(self, cat):
+        # LrC ignores a case-only setAttributes (proven live 2026-10-01: keyword 9214721), so the handler must
+        # rename to a temporary name first, then to the target. The self-match is not a sibling clash.
+        rt, _ = cat
         resp, calls = self._rename(cat, {"keywordId": 22, "newName": "WEDDING"})
         assert resp["success"] is True
+        assert resp["result"]["newName"] == "WEDDING"
+        assert resp["result"]["verified"] is True
+        assert calls["set"] == 2
+        names = [calls["names"][i] for i in (1, 2)]
+        assert names[0] != "WEDDING" and names[0].lower() != "wedding"
+        assert names[1] == "WEDDING"
+        assert rt.eval("EVENTS._children[2]._name") == "WEDDING"
+
+    def test_ordinary_rename_is_one_write(self, cat):
+        resp, calls = self._rename(cat, {"keywordId": 21, "newName": "Wedding 2006"})
+        assert resp["success"] is True
         assert calls["set"] == 1
+
+    def test_case_only_rename_stopped_halfway_names_the_temporary_name(self, cat):
+        # Write 1 (to the temporary name) commits, write 2 never runs: the keyword is left under the temporary
+        # name, and the error must say so -- a re-run of the same rename then finishes it in one write.
+        rt, _ = cat
+        rt.execute("abort_from = 2")
+        resp, calls = self._rename(cat, {"keywordId": 22, "newName": "WEDDING"})
+        assert resp["success"] is not True
+        assert resp["error"]["code"] == "OPERATION_FAILED"
+        temp = calls["names"][1]
+        assert temp in resp["error"]["message"]
+        assert rt.eval("EVENTS._children[2]._name") == temp
+        rt.execute("abort_from = nil")
+        resp2, _ = self._rename(cat, {"keywordId": 22, "newName": "WEDDING"})
+        assert resp2["success"] is True
+        assert rt.eval("EVENTS._children[2]._name") == "WEDDING"
+
+    def test_case_only_rename_halfway_by_throw_still_names_the_temporary_name(self, cat):
+        # Re-review #2: if write 2 THROWS (rather than returning without running), the generic error must still
+        # tell the caller the keyword is parked under the temporary name.
+        rt, _ = cat
+        rt.execute("throw_from = 2")
+        resp, calls = self._rename(cat, {"keywordId": 22, "newName": "WEDDING"})
+        assert resp["error"]["code"] == "OPERATION_FAILED"
+        temp = calls["names"][1]
+        assert temp in resp["error"]["message"]
+        assert "write lock timeout" in resp["error"]["message"]
+        assert rt.eval("EVENTS._children[2]._name") == temp
+
+    def test_case_only_rename_whose_first_write_never_ran_is_unchanged(self, cat):
+        # Re-review #2 gap: a write 1 that never runs must not claim the keyword was parked anywhere.
+        rt, module = cat
+        rt.execute("abort_from = 1")
+        resp, calls = self._rename(cat, {"keywordId": 22, "newName": "WEDDING"})
+        assert resp["error"]["code"] == "OPERATION_FAILED"
+        assert module["_caseOnlyTempName"]("WEDDING") not in resp["error"]["message"]
+        assert rt.eval("EVENTS._children[2]._name") == "Wedding"
+        assert calls["set"] == 0
+
+    def test_temporary_name_clash_is_refused_before_writing(self, cat):
+        rt, module = cat
+        temp = module["_caseOnlyTempName"]("WEDDING")
+        rt.execute(f"table.insert(EVENTS._children, mkkw(23, {temp!r}))")
+        resp, calls = self._rename(cat, {"keywordId": 22, "newName": "WEDDING"})
+        assert resp["error"]["code"] == "KEYWORD_EXISTS"
+        assert calls["set"] == 0
+
+    def test_stale_lowercase_name_still_ends_correct(self, cat):
+        # The live case: lc_name stale (left by a direct-SQLite rename). Two writes still land on the target.
+        rt, _ = cat
+        rt.execute("EVENTS._children[2]._lc = 'device:old'")
+        resp, _ = self._rename(cat, {"keywordId": 22, "newName": "WEDDING"})
+        assert resp["success"] is True
+        assert rt.eval("EVENTS._children[2]._name") == "WEDDING"
 
     def test_rename_preserves_synonyms_and_reads_back(self, cat):
         resp, calls = self._rename(cat, {"keywordId": "21", "newName": "Wedding 2006"})
