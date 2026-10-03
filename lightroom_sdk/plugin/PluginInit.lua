@@ -207,7 +207,7 @@ local function registerSystemCommands()
             result = {
                 pong = true,
                 timestamp = os.time(),
-                version = "1.2.2",
+                version = "1.3.1",
                 protocolVersion = "1"
             }
         })
@@ -362,6 +362,7 @@ local function registerApiCommands()
     router:register("catalog.setRating", CatalogModule.setRating, "sync")
     router:register("catalog.addKeywords", CatalogModule.addKeywords, "sync")
     router:register("catalog.setFlag", CatalogModule.setFlag, "sync")
+    router:register("catalog.batchSetFlag", CatalogModule.batchSetFlag, "sync")
     router:register("catalog.getFlag", CatalogModule.getFlag, "sync")
     router:register("catalog.setTitle", CatalogModule.setTitle, "sync")
     router:register("catalog.setCaption", CatalogModule.setCaption, "sync")

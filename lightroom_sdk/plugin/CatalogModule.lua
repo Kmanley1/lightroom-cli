@@ -1562,6 +1562,63 @@ function CatalogModule.setFlag(params, callback)
     end
 end
 
+-- Set the same flag (pick/reject/none) on multiple photos in one call.
+-- Mirrors DevelopModule.batchSetValue's shape (processed/succeeded/results), but skips the
+-- Develop-module switch and per-photo selection that function needs -- pickStatus is catalog
+-- metadata, not a Develop setting, so no active-photo context is required to write it.
+function CatalogModule.batchSetFlag(params, callback)
+    ensureLrModules()
+    local logger = getLogger()
+
+    local photoIds = params and params.photoIds
+    local flag = params and params.flag
+
+    if not photoIds or type(photoIds) ~= "table" or #photoIds == 0 then
+        callback(ErrorUtils.createError("MISSING_PHOTO_IDS", "photoIds array is required"))
+        return
+    end
+    if #photoIds > 50 then
+        callback(ErrorUtils.createError("BATCH_SIZE_EXCEEDED", "Maximum batch size is 50 photos"))
+        return
+    end
+    if flag ~= 1 and flag ~= -1 and flag ~= 0 then
+        callback(ErrorUtils.createError("INVALID_PARAM_VALUE",
+            "flag must be 1 (pick), -1 (reject), or 0 (none)"))
+        return
+    end
+
+    logger:info("Batch setting flag=" .. tostring(flag) .. " on " .. #photoIds .. " photos")
+
+    local catalog = LrApplication.activeCatalog()
+    local results = {}
+    local succeeded = 0
+
+    catalog:withWriteAccessDo("Batch Set Flag", function()
+        for _, photoId in ipairs(photoIds) do
+            local photo = catalog:getPhotoByLocalId(tonumber(photoId))
+            if not photo then
+                table.insert(results, { photoId = photoId, success = false, error = "Photo not found" })
+            else
+                local success, err = ErrorUtils.safeCall(function()
+                    photo:setRawMetadata("pickStatus", flag)
+                end)
+                if success then
+                    succeeded = succeeded + 1
+                    table.insert(results, { photoId = photoId, success = true })
+                else
+                    table.insert(results, { photoId = photoId, success = false, error = tostring(err) })
+                end
+            end
+        end
+    end, { timeout = 30 })
+
+    callback(ErrorUtils.createSuccess({
+        processed = #results,
+        succeeded = succeeded,
+        results = results
+    }))
+end
+
 -- Get photo flag status
 function CatalogModule.getFlag(params, callback)
     ensureLrModules()

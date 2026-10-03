@@ -88,6 +88,44 @@ def set_flag(ctx, photo_id, flag, dry_run, **kwargs):
     execute_command(ctx, "catalog.setFlag", {"photoId": photo_id, "flag": flag_map[flag]})
 
 
+@catalog.command("batch-set-flag")
+@click.option("--photo-ids", required=True, help="Comma-separated photo IDs")
+@click.argument("flag", type=click.Choice(["pick", "reject", "none"]))
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def batch_set_flag(ctx, photo_ids, flag, dry_run, **kwargs):
+    """Set the same flag (pick/reject/none) on multiple photos in one call"""
+    from lightroom_sdk.retry import calculate_batch_timeout
+
+    try:
+        ids = [int(pid.strip()) for pid in photo_ids.split(",") if pid.strip()]
+    except ValueError:
+        fmt = ctx.obj.get("output", "text") if ctx.obj else "text"
+        click.echo(
+            OutputFormatter.format_error("Invalid photo ID (must be integers)", fmt, code="VALIDATION_ERROR"),
+            err=True,
+        )
+        ctx.exit(2)
+        return
+    if len(ids) > 50:
+        fmt = ctx.obj.get("output", "text") if ctx.obj else "text"
+        click.echo(
+            OutputFormatter.format_error("Maximum batch size is 50 photos", fmt, code="BATCH_SIZE_EXCEEDED"),
+            err=True,
+        )
+        ctx.exit(2)
+        return
+    flag_map = {"pick": 1, "reject": -1, "none": 0}
+    dynamic_timeout = calculate_batch_timeout(len(ids))
+    execute_command(
+        ctx,
+        "catalog.batchSetFlag",
+        {"photoIds": ids, "flag": flag_map[flag]},
+        timeout=dynamic_timeout,
+    )
+
+
 @catalog.command("get-flag")
 @click.argument("photo_id")
 @json_input_options

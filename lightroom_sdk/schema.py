@@ -1180,6 +1180,29 @@ _register(
         response_fields=["photoId", "flag"],
     ),
     CommandSchema(
+        "catalog.batchSetFlag",
+        "catalog.batch-set-flag",
+        "Set the same flag (pick/reject/none) on multiple photos in one call",
+        params=[
+            ParamSchema(
+                "photoIds",
+                ParamType.JSON_ARRAY,
+                required=True,
+                description="Array of photo IDs (max 50)",
+            ),
+            ParamSchema(
+                "flag",
+                ParamType.INTEGER,
+                required=True,
+                description="Flag value (1=pick, -1=reject, 0=none)",
+            ),
+        ],
+        mutating=True,
+        timeout=120.0,
+        supports_dry_run=True,
+        response_fields=["processed", "succeeded", "results"],
+    ),
+    CommandSchema(
         "catalog.getFlag",
         "catalog.get-flag",
         "Get photo flag status",

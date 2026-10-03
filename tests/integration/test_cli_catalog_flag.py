@@ -82,6 +82,47 @@ def test_catalog_set_flag_none(mock_get_bridge, runner):
 
 
 @patch("cli.helpers.get_bridge")
+def test_catalog_batch_set_flag_reject(mock_get_bridge, runner):
+    """lr catalog batch-set-flag --photo-ids 1,2,3 reject が複数写真に一括でフラグを設定する"""
+    mock_bridge = AsyncMock()
+    mock_bridge.send_command.return_value = {
+        "id": "batch-1",
+        "success": True,
+        "result": {
+            "processed": 3,
+            "succeeded": 3,
+            "results": [
+                {"photoId": 1, "success": True},
+                {"photoId": 2, "success": True},
+                {"photoId": 3, "success": True},
+            ],
+        },
+    }
+    mock_get_bridge.return_value = mock_bridge
+
+    result = runner.invoke(cli, ["catalog", "batch-set-flag", "--photo-ids", "1,2,3", "reject"])
+    assert result.exit_code == 0
+    mock_bridge.send_command.assert_called_once_with(
+        "catalog.batchSetFlag",
+        {"photoIds": [1, 2, 3], "flag": -1},
+        timeout=30.0,  # 3 photos -> max(30, 10+2*3) = 30
+    )
+
+
+def test_catalog_batch_set_flag_exceeds_limit(runner):
+    """51枚指定時のバリデーションエラー"""
+    ids = ",".join(str(i) for i in range(1, 52))
+    result = runner.invoke(cli, ["catalog", "batch-set-flag", "--photo-ids", ids, "reject"])
+    assert result.exit_code != 0
+
+
+def test_catalog_batch_set_flag_invalid_ids(runner):
+    """整数でないIDを渡した場合のバリデーションエラー"""
+    result = runner.invoke(cli, ["catalog", "batch-set-flag", "--photo-ids", "1,abc,3", "reject"])
+    assert result.exit_code != 0
+
+
+@patch("cli.helpers.get_bridge")
 def test_catalog_get_flag(mock_get_bridge, runner):
     """lr catalog get-flag <id> がフラグ状態を取得する"""
     mock_bridge = AsyncMock()
