@@ -126,6 +126,79 @@ def batch_set_flag(ctx, photo_ids, flag, dry_run, **kwargs):
     )
 
 
+def _load_keyword_pairs(path):
+    """Read [[photoId, keywordId], ...] or [{"photoId":..,"keywordId":..}, ...] -> list of dicts, or raise ValueError."""
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list) or not data:
+        raise ValueError("pairs file must hold a non-empty JSON array")
+    pairs = []
+    for i, p in enumerate(data, 1):
+        if isinstance(p, dict):
+            pid, kid = p.get("photoId"), p.get("keywordId")
+        elif isinstance(p, (list, tuple)) and len(p) == 2:
+            pid, kid = p
+        else:
+            raise ValueError(f"pair {i} must be [photoId, keywordId] or an object with photoId and keywordId")
+        if isinstance(pid, bool) or isinstance(kid, bool) or not isinstance(pid, int) or not isinstance(kid, int):
+            raise ValueError(f"pair {i}: photoId and keywordId must be integers")
+        pairs.append({"photoId": pid, "keywordId": kid})
+    return pairs
+
+
+@catalog.command("batch-remove-keywords")
+@click.option(
+    "--pairs-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help='JSON file: [[photoId, keywordId], ...] or [{"photoId":..,"keywordId":..}, ...] (max 200 distinct pairs)',
+)
+@click.option("--catalog-path", default=None, help="Refuse unless Lightroom has this .lrcat open (ids are per-catalog)")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def batch_remove_keywords(ctx, pairs_file, catalog_path, dry_run, **kwargs):
+    """Remove keywords (by id) from photos: up to 200 photo/keyword pairs in one write.
+
+    Each pair's status (removed / not_on_photo / photo_not_found / still_present / unverified) comes from reading
+    the photo before and after the write; a photo whose keyword count changed by anything else is listed in
+    collateralPhotos. Catalog only; the keyword objects stay. Check `complete` in the result.
+    """
+    from lightroom_sdk.retry import calculate_batch_timeout
+
+    fmt = ctx.obj.get("output", "text") if ctx.obj else "text"
+    json_given = kwargs.get("json_str") is not None or kwargs.get("json_stdin")
+    if pairs_file is None and not json_given:
+        click.echo(
+            OutputFormatter.format_error("--pairs-file (or --json / --json-stdin) is required", fmt,
+                                         code="VALIDATION_ERROR"),
+            err=True,
+        )
+        ctx.exit(2)
+        return
+    pairs = []
+    if pairs_file is not None:
+        try:
+            pairs = _load_keyword_pairs(pairs_file)
+        except (ValueError, OSError) as e:
+            click.echo(OutputFormatter.format_error(str(e), fmt, code="VALIDATION_ERROR"), err=True)
+            ctx.exit(2)
+            return
+        distinct = {(p["photoId"], p["keywordId"]) for p in pairs}
+        if len(distinct) > 200:
+            click.echo(
+                OutputFormatter.format_error("Maximum batch size is 200 pairs", fmt, code="BATCH_SIZE_EXCEEDED"),
+                err=True,
+            )
+            ctx.exit(2)
+            return
+    # The plugin side allows up to 110 s (CommandRouter); --json input may carry a full 200 pairs, so use the cap.
+    params = {"pairs": pairs}
+    if catalog_path:
+        params["catalogPath"] = catalog_path
+    execute_command(ctx, "catalog.batchRemoveKeywords", params, timeout=calculate_batch_timeout(200))
+
+
 @catalog.command("get-flag")
 @click.argument("photo_id")
 @json_input_options

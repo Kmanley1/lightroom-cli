@@ -44,6 +44,7 @@ local LUA_COMMAND_TIMEOUT = {
     ["develop.batchApplySettings"] = 110,
     ["develop.batchSetValue"] = 110,
     ["catalog.batchSetFlag"] = 110,
+    ["catalog.batchRemoveKeywords"] = 110,
     ["develop.batchAIMask"] = 280,
     ["catalog.exportPhotos"] = 280,
 }
