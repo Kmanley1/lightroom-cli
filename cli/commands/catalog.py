@@ -189,6 +189,15 @@ def batch_add_keywords(ctx, pairs_file, catalog_path, dry_run, **kwargs):
     _keyword_pairs_command(ctx, pairs_file, catalog_path, kwargs, "catalog.batchAddKeywords")
 
 
+@catalog.command("probe-photo")
+@click.argument("photo_id")
+@json_input_options
+@click.pass_context
+def probe_photo(ctx, photo_id, **kwargs):
+    """DIAGNOSTIC, read-only: run each step of looking a photo up and reading it; report which step fails and how."""
+    execute_command(ctx, "catalog.probePhoto", {"photoId": photo_id})
+
+
 def _keyword_pairs_command(ctx, pairs_file, catalog_path, kwargs, bridge_command):
     """Shared body of batch-add-keywords / batch-remove-keywords: read and check the pairs, then send them."""
     from lightroom_sdk.retry import calculate_batch_timeout

@@ -1203,6 +1203,16 @@ _register(
         response_fields=["processed", "succeeded", "results"],
     ),
     CommandSchema(
+        "catalog.probePhoto",
+        "catalog.probe-photo",
+        "DIAGNOSTIC, read-only: run each step of looking a photo up and reading it, report which fails and how",
+        params=[
+            ParamSchema("photoId", ParamType.STRING, required=True, description="Photo localIdentifier"),
+        ],
+        mutating=False,
+        response_fields=["photoId", "steps"],
+    ),
+    CommandSchema(
         "catalog.batchAddKeywords",
         "catalog.batch-add-keywords",
         "Add existing keywords (by id) to photos: up to 200 photo/keyword pairs in one write; never creates keywords",

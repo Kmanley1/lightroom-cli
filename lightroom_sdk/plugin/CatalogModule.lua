@@ -2439,9 +2439,14 @@ function CatalogModule.removeKeyword(params, callback)
     local opError = nil
     local writeSuccess, writeErr = ErrorUtils.safeCall(function()
         catalog:withWriteAccessDo("Remove Keyword", function()
-            local photo = catalog:getPhotoByLocalId(tonumber(photoId))
+            local photo, lookupErr = CatalogModule._photoById(catalog, photoId)
+            if lookupErr then
+                opError = { code = "OPERATION_FAILED", message = "Could not look up photo " .. tostring(photoId)
+                    .. ": " .. lookupErr }
+                return
+            end
             if not photo then
-                opError = { code = "PHOTO_NOT_FOUND", message = "Photo not found" }
+                opError = { code = "PHOTO_NOT_FOUND", message = "Photo " .. tostring(photoId) .. " not found" }
                 return
             end
             -- Find keyword object by name
@@ -2471,6 +2476,77 @@ function CatalogModule.removeKeyword(params, callback)
     else
         callback(ErrorUtils.createError("OPERATION_FAILED", tostring(writeErr)))
     end
+end
+
+-- Look a photo up by id and tell "not in the catalog" from "lookup failed". Measured live 2026-10-07 with the
+-- read-only `catalog probe-photo` diagnostic (Carolyn's catalog, id 0 vs a real photo): for an id that is NOT in the
+-- catalog, getPhotoByLocalId does not throw and does not return nil -- it returns a DUD object whose localIdentifier
+-- echoes the id and whose getRawMetadata('uuid') and ('path') return nil without error, while 'pickStatus',
+-- 'keywords' and getFormattedMetadata throw "?:0: attempt to index a nil value". Every real photo has a uuid. So: no
+-- uuid = not there. Returns photo, nil when found; nil, nil when not there (or a non-numeric id); nil, err when the
+-- lookup or the uuid read itself fails -- callers must read that as unverified, never as "not there".
+-- (Two earlier fixes guessed wrong about where the failure happens; see CHANGELOG 2026-10-07.)
+function CatalogModule._photoById(catalog, id)
+    local n = tonumber(id)
+    if not n then return nil, nil end
+    local ok, photo, uuid = ErrorUtils.safeCall(function()
+        local p = catalog:getPhotoByLocalId(n)
+        if p == nil then return nil, nil end
+        return p, p:getRawMetadata("uuid")
+    end)
+    if not ok then return nil, tostring(photo) end
+    if photo == nil or uuid == nil then return nil, nil end
+    return photo, nil
+end
+
+-- catalog.probePhoto -- DIAGNOSTIC, read-only (2026-10-07). For one photo id, run each step a command takes when it
+-- looks a photo up and reads it, each in its own protected call, and report which step fails and how. Built because
+-- an unknown id fails with "?:0: attempt to index a nil value" and two fixes guessed wrong about WHERE (live
+-- 2026-10-06/07): wrapping the lookup, then the lookup plus a uuid read, did not catch it. Never opens a write.
+-- Response: photoId, steps[{step, ok, result, error}].
+function CatalogModule.probePhoto(params, callback)
+    ensureLrModules()
+    local n = tonumber(params and params.photoId)
+    if not n then
+        callback(ErrorUtils.createError("MISSING_PARAM", "photoId (a number) is required"))
+        return
+    end
+    local catalog = LrApplication.activeCatalog()
+    local steps = {}
+    local function describe(v)
+        local t = type(v)
+        if t == "table" then
+            local c = 0
+            for _ in pairs(v) do c = c + 1 end
+            return "table with " .. c .. " entries"
+        end
+        if t == "string" then return "string: " .. v:sub(1, 120) end
+        if v == nil then return "nil" end
+        return t .. ": " .. tostring(v)
+    end
+    local function step(name, fn, plain)
+        local ok, v
+        if plain then ok, v = pcall(fn) else ok, v = LrTasks.pcall(fn) end
+        table.insert(steps, { step = name, ok = ok, result = ok and describe(v) or nil,
+                              error = (not ok) and tostring(v) or nil })
+        return ok, v
+    end
+    step("lookup, no read txn, LrTasks.pcall", function() return catalog:getPhotoByLocalId(n) end)
+    local okTxn, txnErr = LrTasks.pcall(function()
+        catalog:withReadAccessDo(function()
+            step("lookup, read txn, plain pcall", function() return catalog:getPhotoByLocalId(n) end, true)
+            local ok, photo = step("lookup, read txn, LrTasks.pcall", function() return catalog:getPhotoByLocalId(n) end)
+            if ok and photo ~= nil then
+                step("photo.localIdentifier", function() return photo.localIdentifier end)
+                for _, key in ipairs({ "uuid", "path", "pickStatus", "keywords" }) do
+                    step("getRawMetadata('" .. key .. "')", function() return photo:getRawMetadata(key) end)
+                end
+                step("getFormattedMetadata('fileName')", function() return photo:getFormattedMetadata("fileName") end)
+            end
+        end)
+    end)
+    if not okTxn then table.insert(steps, { step = "the read transaction itself", ok = false, error = tostring(txnErr) }) end
+    callback(ErrorUtils.createSuccess({ photoId = n, steps = steps }))
 end
 
 -- Pure: validate {photoId, keywordId} pairs and group them by photo, in first-seen order, dropping duplicate pairs.
@@ -2531,7 +2607,8 @@ end
 -- itself if the catalog auto-writes XMP. The keyword objects stay, possibly now on no photo; delete those separately.
 -- Response: requested, removed, notOnPhoto, photoNotFound, stillPresent, unverified, collateralPhotos, complete,
 -- writeRan, writeError, results[{photoId, keywordId, status}].
--- complete == (stillPresent == 0 and unverified == 0 and #collateralPhotos == 0).
+-- complete == (stillPresent, unverified and photoNotFound all 0, and no collateralPhotos) -- photoNotFound since
+-- 2026-10-07, matching batchAddKeywords.
 -- Reviewed independently 2026-10-04 (session 2c16332c); its findings are folded in.
 
 -- Pure: do two catalog paths name the same file? Case-insensitive, slashes normalised (Windows). Unit-testable.
@@ -2574,8 +2651,10 @@ function CatalogModule.batchRemoveKeywords(params, callback)
         local state = {}
         catalog:withReadAccessDo(function()
             for _, g in ipairs(groups) do
-                local photo = catalog:getPhotoByLocalId(g.photoId)
-                if photo then
+                local photo, lookupErr = CatalogModule._photoById(catalog, g.photoId)
+                if lookupErr then
+                    state[g.photoId] = { unreadable = true }   -- a failed lookup is not a missing photo
+                elseif photo then
                     local kws = photo:getRawMetadata("keywords")
                     if type(kws) ~= "table" then
                         state[g.photoId] = { unreadable = true }
@@ -2615,7 +2694,7 @@ function CatalogModule.batchRemoveKeywords(params, callback)
                 for _, g in ipairs(groups) do
                     local b = before[g.photoId]
                     if b and b.row then
-                        local photo = catalog:getPhotoByLocalId(g.photoId)
+                        local photo = CatalogModule._photoById(catalog, g.photoId)   -- nil if it vanished
                         local found = CatalogModule._keywordsById(photo and photo:getRawMetadata("keywords"), g.keywordIds)
                         for _, kid in ipairs(g.keywordIds) do
                             if b.row[kid] and found[kid] then photo:removeKeyword(found[kid]) end
@@ -2662,7 +2741,10 @@ function CatalogModule.batchRemoveKeywords(params, callback)
         stillPresent = counts.stillPresent,
         unverified = counts.unverified,
         collateralPhotos = collateral,
-        complete = counts.stillPresent == 0 and counts.unverified == 0 and #collateral == 0,
+        -- photoNotFound too (2026-10-07), matching batchAddKeywords: a pair that was asked for and not acted on is
+        -- never "complete" -- ids from another catalog would otherwise read as done (see _photoById: no uuid).
+        complete = counts.stillPresent == 0 and counts.unverified == 0 and counts.photoNotFound == 0
+            and #collateral == 0,
         writeRan = writeRan,
         writeError = (not okWrite) and tostring(writeErr) or nil,
         results = results,
@@ -2727,8 +2809,10 @@ function CatalogModule.batchAddKeywords(params, callback)
         local state = {}
         catalog:withReadAccessDo(function()
             for _, g in ipairs(groups) do
-                local photo = catalog:getPhotoByLocalId(g.photoId)
-                if photo then
+                local photo, lookupErr = CatalogModule._photoById(catalog, g.photoId)
+                if lookupErr then
+                    state[g.photoId] = { unreadable = true }   -- a failed lookup is not a missing photo
+                elseif photo then
                     local kws = photo:getRawMetadata("keywords")
                     if type(kws) ~= "table" then
                         state[g.photoId] = { unreadable = true }
@@ -2775,7 +2859,7 @@ function CatalogModule.batchAddKeywords(params, callback)
                 for _, g in ipairs(groups) do
                     local b = before[g.photoId]
                     if b and b.row then
-                        local photo = catalog:getPhotoByLocalId(g.photoId)
+                        local photo = CatalogModule._photoById(catalog, g.photoId)   -- nil if it vanished
                         for _, kid in ipairs(g.keywordIds) do
                             if photo and live[kid] and not b.row[kid] then photo:addKeyword(live[kid]) end
                         end

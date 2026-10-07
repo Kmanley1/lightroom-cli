@@ -3,11 +3,11 @@
 > Generated from `lightroom_sdk/schema.py` via `lr docs reference`. Do not edit by hand --
 > regenerate after any schema change.
 
-**148 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
+**149 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
 
 ## Groups
 
-- [`catalog`](#catalog) -- 43 commands
+- [`catalog`](#catalog) -- 44 commands
 - [`develop`](#develop) -- 71 commands
 - [`export`](#export) -- 1 commands
 - [`plugin`](#plugin) -- 3 commands
@@ -340,6 +340,18 @@ List photos in catalog
 | `offset` | integer |  | `0` | Number of results to skip for pagination |
 
 **Response fields:** `photos`, `total`, `limit`, `offset`
+
+### `lr catalog probe-photo`
+
+DIAGNOSTIC, read-only: run each step of looking a photo up and reading it, report which fails and how
+
+**MCP tool:** `lr_catalog_probe_photo`  -  **bridge:** `catalog.probePhoto`  -  **risk:** read  -  **timeout:** 30s
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `photoId` | string | yes |  | Photo localIdentifier |
+
+**Response fields:** `photoId`, `steps`
 
 ### `lr catalog remove-from-catalog`
 

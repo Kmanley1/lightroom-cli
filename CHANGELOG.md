@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Every error printed a second line** `{"error": {"code": "ERROR", "message": "1"}}` (2026-10-06): `ctx.exit()`
+  raises click's `Exit`, a `RuntimeError` subclass in Click 8, and `execute_command`'s `except Exception` caught it
+  and printed `str(Exit(1))`. `Exit` now passes through; exit codes were already right and are unchanged.
+- **A photo id that is not in the catalog crashed `remove-keyword`** and failed a whole `batch-add-keywords` /
+  `batch-remove-keywords` call ("?:0: attempt to index a nil value"). Measured live 2026-10-07 with the new
+  `catalog probe-photo` diagnostic: for an unknown id Lightroom's `getPhotoByLocalId` neither throws nor returns
+  nil -- it returns a DUD object whose `uuid` and `path` read back nil and whose other reads (flag, keywords, file
+  name) throw. Two earlier attempts guessed wrong: both still treated only an ERROR as "not there" (first around
+  the lookup, then around the lookup plus a uuid read), and the dud raises none. The fix: a photo exists only if
+  it has a uuid -- a nil uuid, not an error, means absent. These three commands now report `PHOTO_NOT_FOUND` /
+  `photo_not_found` per pair; a lookup that fails any other way is `OPERATION_FAILED` / `unverified`, never
+  "not found".
+  **`batch-remove-keywords` `complete` now also requires every photo to be found**, matching `batch-add-keywords`.
+  The other 24 `getPhotoByLocalId` call sites (23 handlers: 16 catalog, 4 develop, 3 preview) still mis-handle an
+  unknown id -- backlog.
+
+### Added (diagnostics)
+- **`catalog probe-photo <id>`** (2026-10-07) -- read-only: runs each step of looking a photo up and reading it, each
+  in its own protected call, and reports which step fails and how. `system ping` now also returns a `build` marker,
+  bumped with every plugin change, so a Reload Plug-in that did not take is visible.
+
 ### Added
 - **`catalog batch-add-keywords --pairs-file F [--catalog-path P]`** (2026-10-06) -- the mirror of
   `batch-remove-keywords`: add EXISTING keywords, by id, to photos -- up to 200 photo/keyword pairs in one write.

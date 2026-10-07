@@ -41,6 +41,7 @@ STUB = """
     local function mkphoto(kws)
         local p = { _kws = kws }
         function p:getRawMetadata(key)
+            if key == 'uuid' then return 'UUID' end      -- every real photo has one
             if key ~= 'keywords' then return nil end
             if nil_for and PHOTOS[nil_for] == self then return nil end
             if nil_once_for and PHOTOS[nil_once_for] == self then nil_once_for = nil; return nil end
@@ -70,7 +71,25 @@ STUB = """
     end
     CATALOG = {}
     function CATALOG:getPath() return open_path end
-    function CATALOG:getPhotoByLocalId(id) return PHOTOS[id] end
+    throw_for_missing = false   -- unknown id: throw at the lookup (NOT what LrC does; kept to test the error path)
+    DUD = {}                    -- what LrC returns for an unknown id (measured live 2026-10-07 with probe-photo)
+    function DUD:getRawMetadata(key)
+        if key == 'uuid' or key == 'path' then return nil end
+        error('?:0: attempt to index a nil value')
+    end
+    function DUD:getFormattedMetadata() error('?:0: attempt to index a nil value') end
+    lookup_fail_for = nil       -- a photo id whose lookup fails for a reason OTHER than not-found
+    function CATALOG:getPhotoByLocalId(id)
+        -- an id that is not in the catalog: LrC returns a DUD object (measured live 2026-10-07 with probe-photo),
+        -- not nil; the 10-06 note that it THROWS was wrong (the throw came from the first read of the dud)
+        if lookup_fail_for and id == lookup_fail_for then error('catalog busy') end
+        local p = PHOTOS[id]
+        if p == nil then
+            if throw_for_missing then error('?:0: attempt to index a nil value') end   -- not seen live
+            return DUD       -- what LrC does (live 2026-10-07): a dud object, uuid/path nil, other reads throw
+        end
+        return p
+    end
     function CATALOG:getKeywords() local c = {} for i, x in ipairs(TREE) do c[i] = x end return c end
     function CATALOG:createKeyword() create_calls = create_calls + 1 end
     function CATALOG:withReadAccessDo(fn) reads = reads + 1; fn() end
@@ -246,6 +265,24 @@ def test_unreadable_before_stays_unverified_even_if_readable_after(cat):
     resp = _call(cat, _lua_pairs([(100, 1), (101, 2)]))
     st = _statuses(resp)
     assert st[(100, 1)] == "unverified" and st[(101, 2)] == "added"   # never "not_added": it was not attempted
+    assert cat[0].eval("names(100)") == "People"
+
+
+@pytest.mark.parametrize("throws,status", [(False, "photo_not_found"), (True, "unverified")])
+def test_a_stale_id_does_not_fail_the_whole_batch(cat, throws, status):
+    # LrC returns a dud object for an unknown id (live 2026-10-07): photo_not_found; a lookup that throws (never
+    # seen) stays unverified. Either way the other pair is tagged.
+    cat[0].execute(f"throw_for_missing = {'true' if throws else 'false'}")
+    resp = _call(cat, _lua_pairs([(0, 1), (100, 1)]))
+    st = _statuses(resp)
+    assert st[(0, 1)] == status and st[(100, 1)] == "added"
+
+
+def test_a_lookup_that_fails_otherwise_is_unverified(cat):
+    cat[0].execute("lookup_fail_for = 100")
+    resp = _call(cat, _lua_pairs([(100, 1), (101, 2)]))
+    st = _statuses(resp)
+    assert st[(100, 1)] == "unverified" and st[(101, 2)] == "added"
     assert cat[0].eval("names(100)") == "People"
 
 

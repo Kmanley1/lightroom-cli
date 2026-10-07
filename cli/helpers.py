@@ -152,6 +152,10 @@ def execute_command(ctx, command: str, params: dict, *, timeout: float | None = 
             if post_process is not None:
                 data = post_process(data)
             click.echo(OutputFormatter.format(data, fmt, fields=fields))
+        except click.exceptions.Exit:
+            # ctx.exit() raises Exit, a RuntimeError subclass in Click 8 -- let it through. Caught below, it printed a
+            # second error line, {"error": {"code": "ERROR", "message": "1"}}, after every real one (2026-10-06).
+            raise
         except Exception as e:
             if _is_connection_error(e):
                 click.echo(

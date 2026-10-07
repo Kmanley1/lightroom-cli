@@ -33,6 +33,7 @@ STUB = """
     local function mkphoto(id, kws)
         local p = { _kws = kws }
         function p:getRawMetadata(key)
+            if key == 'uuid' then return 'UUID' end      -- every real photo has one
             if key ~= 'keywords' then return nil end
             if nil_after_write and writes > 0 then return nil end
             if nil_for and PHOTOS[nil_for] == self then return nil end
@@ -61,7 +62,25 @@ STUB = """
     end
     CATALOG = {}
     function CATALOG:getPath() return open_path end
-    function CATALOG:getPhotoByLocalId(id) return PHOTOS[id] end
+    throw_for_missing = false   -- unknown id: throw at the lookup (NOT what LrC does; kept to test the error path)
+    DUD = {}                    -- what LrC returns for an unknown id (measured live 2026-10-07 with probe-photo)
+    function DUD:getRawMetadata(key)
+        if key == 'uuid' or key == 'path' then return nil end
+        error('?:0: attempt to index a nil value')
+    end
+    function DUD:getFormattedMetadata() error('?:0: attempt to index a nil value') end
+    lookup_fail_for = nil       -- a photo id whose lookup fails for a reason OTHER than not-found
+    function CATALOG:getPhotoByLocalId(id)
+        -- an id that is not in the catalog: LrC returns a DUD object (measured live 2026-10-07 with probe-photo),
+        -- not nil; the 10-06 note that it THROWS was wrong (the throw came from the first read of the dud)
+        if lookup_fail_for and id == lookup_fail_for then error('catalog busy') end
+        local p = PHOTOS[id]
+        if p == nil then
+            if throw_for_missing then error('?:0: attempt to index a nil value') end   -- not seen live
+            return DUD       -- what LrC does (live 2026-10-07): a dud object, uuid/path nil, other reads throw
+        end
+        return p
+    end
     function CATALOG:withReadAccessDo(fn)
         reads = reads + 1
         if read_fail_after_write and writes > 0 then error('read busy') end
@@ -153,7 +172,8 @@ def test_not_on_photo_and_photo_not_found(cat):
     assert st[(999, 1)] == "photo_not_found"
     assert st[(101, 3)] == "removed"
     r = resp["result"]
-    assert (r["removed"], r["notOnPhoto"], r["photoNotFound"], r["complete"]) == (1, 1, 1, True)
+    # complete is False since 2026-10-07: "not found" rests on LrC's error text, so it may never read as done
+    assert (r["removed"], r["notOnPhoto"], r["photoNotFound"], r["complete"]) == (1, 1, 1, False)
 
 
 def test_aborted_write_reports_still_present(cat):
@@ -198,6 +218,26 @@ def test_photo_gone_after_the_write_reports_unverified(cat):
     assert resp["result"]["complete"] is False
 
 
+@pytest.mark.parametrize("throws,status", [(False, "photo_not_found"), (True, "unverified")])
+def test_a_stale_id_does_not_fail_the_whole_batch(cat, throws, status):
+    # LrC returns a dud object for an unknown id (live 2026-10-07): photo_not_found. A lookup that THROWS was never
+    # seen; it must stay unverified, never photo_not_found. Either way the other pair goes through.
+    cat[0].execute(f"throw_for_missing = {'true' if throws else 'false'}")
+    resp = _call(cat, _lua_pairs([(0, 1), (100, 1)]))
+    st = _statuses(resp)
+    assert st[(0, 1)] == status and st[(100, 1)] == "removed"
+
+
+def test_a_lookup_that_fails_otherwise_is_unverified_never_photo_not_found(cat):
+    # photo_not_found counts as done for a removal; a busy catalog must not
+    cat[0].execute("lookup_fail_for = 100")
+    resp = _call(cat, _lua_pairs([(100, 1), (101, 1)]))
+    st = _statuses(resp)
+    assert st[(100, 1)] == "unverified" and st[(101, 1)] == "removed"
+    assert resp["result"]["complete"] is False
+    assert cat[0].eval("names(100)") == "2013_11_14,2013,Wedding"
+
+
 def test_wrong_catalog_is_refused_before_any_read_or_write(cat):
     resp = _call(cat, _lua_pairs([(100, 1)]), ", catalogPath = 'C:/_/main/LightRoom/Catalogs/Ethan/Ethan.lrcat'")
     assert resp["error"]["code"] == "WRONG_CATALOG"
@@ -240,8 +280,10 @@ def test_unreadable_keywords_before_the_write_leaves_that_photo_alone(cat):
 def test_no_write_when_nothing_requested_is_on_a_photo(cat):
     resp = _call(cat, _lua_pairs([(100, 3), (999, 1)]))
     r = resp["result"]
-    assert (r["writeRan"], r["complete"]) == (False, True)
+    assert (r["writeRan"], r["complete"]) == (False, False)      # 999 not found: never "complete" (2026-10-07)
     assert cat[0].eval("writes") == 0
+    resp = _call(cat, _lua_pairs([(100, 3)]))                    # only not_on_photo: nothing to do, complete
+    assert (resp["result"]["writeRan"], resp["result"]["complete"]) == (False, True)
 
 
 def test_one_write_transaction_for_the_whole_batch(cat):
