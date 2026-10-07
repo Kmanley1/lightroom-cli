@@ -2549,6 +2549,139 @@ function CatalogModule.probePhoto(params, callback)
     callback(ErrorUtils.createSuccess({ photoId = n, steps = steps }))
 end
 
+-- Names looked up (never called) by probeApi: anything that could delete, remove or move a keyword.
+CatalogModule.PROBE_API_CANDIDATES = { "deleteKeyword", "deleteKeywords", "deleteKeywordAndChildren",
+    "removeKeyword", "removeKeywords", "removeKeywordFromCatalog", "removeChild", "removeChildren", "purge",
+    "purgeKeyword", "purgeKeywords", "purgeUnusedKeywords", "erase", "eraseKeyword", "delete", "remove", "destroy",
+    "dispose", "unlink", "detach", "setParent", "setParentKeyword", "reparent", "move", "moveKeyword", "moveTo" }
+
+-- Documented SDK methods that a complete listing MUST contain: the proof the walk sees the real class.
+CatalogModule.PROBE_API_KNOWN = {
+    catalog = { "createKeyword", "getKeywords", "withReadAccessDo", "withWriteAccessDo" },
+    keyword = { "getName", "getChildren", "getAttributes" },
+}
+
+-- Pure: which methods does `obj` expose? Walks the object, its metatable's __index table and THAT table's chain
+-- (how SDK classes inherit), collecting every string key whose value is a function or a callable table (skipping
+-- `__` metamethods), then looks up each candidate name directly (which also reaches a computed __index). It reads
+-- keys; it never calls a function it finds. Anything the walk could NOT see is named in `blind` (a computed
+-- __index or a hidden metatable at any depth, or the depth cap), and `knownMissing` lists documented methods absent
+-- from the listing. `listingComplete` is true only when both are empty -- only then can an absent name be read as
+-- "not there"; otherwise only the candidates are conclusive, each for itself (anything but "nil" is a hit).
+-- Review 2026-10-07: without `blind`, a computed __index one level down read as a clean, complete listing.
+-- Unit-testable.
+local PROBE_MAX_DEPTH = 8
+function CatalogModule._probeObject(label, obj, candidates, lookup, known)
+    lookup = lookup or pcall
+    local out = { object = label, luaType = type(obj), methods = {}, candidates = {}, errors = {}, blind = {},
+                  knownMissing = {}, suspicious = {} }
+    local names, seen = {}, {}
+    local function callable(v)
+        if type(v) == "function" then return true end
+        if type(v) ~= "table" then return false end
+        local ok, mt = pcall(getmetatable, v)
+        return ok and type(mt) == "table" and rawget(mt, "__call") ~= nil
+    end
+    local function walk(t, depth)
+        if t == nil or seen[t] then return end
+        if depth > PROBE_MAX_DEPTH then
+            table.insert(out.blind, "depth cap " .. PROBE_MAX_DEPTH .. " reached")
+            return
+        end
+        seen[t] = true
+        if type(t) == "table" then
+            local ok, err = pcall(function()
+                for k, v in pairs(t) do
+                    if type(k) == "string" and k:sub(1, 2) ~= "__" and callable(v) then names[k] = true end
+                end
+            end)
+            if not ok then table.insert(out.errors, "listing at depth " .. depth .. ": " .. tostring(err)) end
+        end
+        local okMt, mt = pcall(getmetatable, t)
+        if not okMt then
+            table.insert(out.blind, "getmetatable failed at depth " .. depth .. ": " .. tostring(mt))
+            if depth == 0 then out.indexKind = "getmetatable failed" end
+        elseif type(mt) == "table" then
+            local idx = rawget(mt, "__index")
+            if depth == 0 then out.indexKind = type(idx) end
+            if type(idx) == "table" then
+                walk(idx, depth + 1)
+            elseif idx ~= nil then
+                table.insert(out.blind, "computed __index (" .. type(idx) .. ") at depth " .. depth)
+            end
+        elseif mt ~= nil then
+            table.insert(out.blind, "hidden metatable (" .. type(mt) .. ") at depth " .. depth)
+            if depth == 0 then out.indexKind = "hidden metatable (" .. type(mt) .. ")" end
+        elseif depth == 0 then
+            out.indexKind = "none"
+        end
+    end
+    walk(obj, 0)
+    for k in pairs(names) do table.insert(out.methods, k) end
+    table.sort(out.methods)
+    for _, k in ipairs(out.methods) do
+        local l = k:lower()
+        for _, word in ipairs({ "delete", "remove", "purge", "erase", "move", "parent", "destroy" }) do
+            if l:find(word, 1, true) then table.insert(out.suspicious, k) break end
+        end
+    end
+    for _, k in ipairs(known or {}) do
+        if not names[k] then table.insert(out.knownMissing, k) end
+    end
+    out.listingComplete = #out.blind == 0 and #out.errors == 0 and #out.knownMissing == 0 and known ~= nil
+    for _, name in ipairs(candidates or {}) do
+        local ok, v = lookup(function() return obj[name] end)
+        out.candidates[name] = ok and type(v) or ("lookup error: " .. tostring(v))
+    end
+    return out
+end
+
+-- catalog.probeApi -- DIAGNOSTIC, read-only (2026-10-07). Which methods does Lightroom expose on the catalog and on a
+-- keyword? Built to settle whether the SDK can delete a keyword (Ken asked for `delete-keyword`): Adobe documents no
+-- such call, and the retired lightroom_mcp's `catalog:deleteKeyword` batch only ever logged "deleted=0". It looks
+-- names up and walks metatables; it never calls anything it finds, and never opens a write.
+-- Response: keywordId, keywordName, objects[{object, luaType, indexKind, methods[], candidates{name=type}, errors[],
+-- blind[], knownMissing[], suspicious[], listingComplete}]. Read "no delete" only from listingComplete objects.
+function CatalogModule.probeApi(params, callback)
+    ensureLrModules()
+    local raw = params and params.keywordId
+    local wantId = raw ~= nil and tonumber(raw) or nil
+    if raw ~= nil and not wantId then
+        callback(ErrorUtils.createError("INVALID_PARAM", "keywordId must be a number"))
+        return
+    end
+    local catalog = LrApplication.activeCatalog()
+    local objects, kwId, kwName = {}, nil, nil
+    local ok, err = LrTasks.pcall(function()
+        catalog:withReadAccessDo(function()
+            table.insert(objects, CatalogModule._probeObject("catalog", catalog, CatalogModule.PROBE_API_CANDIDATES,
+                LrTasks.pcall, CatalogModule.PROBE_API_KNOWN.catalog))
+            local kw
+            if wantId then
+                kw = CatalogModule._keywordsInTreeById(catalog:getKeywords(), { [wantId] = true })[wantId]
+            else
+                kw = catalog:getKeywords()[1]
+            end
+            if kw then
+                kwId = kw.localIdentifier
+                local okName, name = LrTasks.pcall(function() return kw:getName() end)
+                kwName = okName and name or nil
+                table.insert(objects, CatalogModule._probeObject("keyword", kw, CatalogModule.PROBE_API_CANDIDATES,
+                    LrTasks.pcall, CatalogModule.PROBE_API_KNOWN.keyword))
+            end
+        end)
+    end)
+    if not ok then
+        callback(ErrorUtils.createError("OPERATION_FAILED", "Probe failed: " .. tostring(err)))
+        return
+    end
+    if wantId and not kwId then
+        callback(ErrorUtils.createError("KEYWORD_NOT_FOUND", "Keyword " .. wantId .. " not found"))
+        return
+    end
+    callback(ErrorUtils.createSuccess({ keywordId = kwId, keywordName = kwName, objects = objects }))
+end
+
 -- Pure: validate {photoId, keywordId} pairs and group them by photo, in first-seen order, dropping duplicate pairs.
 -- Returns groups ({ {photoId=, keywordIds={...}}, ... }) and the distinct pair count, or nil, count|nil, message.
 -- Unit-testable.

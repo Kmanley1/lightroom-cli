@@ -25,6 +25,13 @@ All notable changes to this project will be documented in this file.
 - **`catalog probe-photo <id>`** (2026-10-07) -- read-only: runs each step of looking a photo up and reading it, each
   in its own protected call, and reports which step fails and how. `system ping` now also returns a `build` marker,
   bumped with every plugin change, so a Reload Plug-in that did not take is visible.
+- **`catalog probe-api [--keyword-id N]`** (2026-10-07) -- read-only: lists the methods Lightroom exposes on the
+  catalog and on a keyword (own and inherited), and looks up named candidates (`deleteKeyword`, `delete`,
+  `setParent`, ...) without calling anything. Built to settle whether the SDK can delete or move a keyword before
+  building `delete-keyword`. Self-certifying after an independent review: `blind` names anything the walk could
+  not see (a computed `__index` or hidden metatable at any depth, the depth cap), `knownMissing` lists documented
+  methods absent from the listing, and `listingComplete` is true only when both are empty -- read "no such
+  method" only from a complete listing; otherwise only the looked-up candidates are conclusive.
 
 ### Added
 - **`catalog batch-add-keywords --pairs-file F [--catalog-path P]`** (2026-10-06) -- the mirror of

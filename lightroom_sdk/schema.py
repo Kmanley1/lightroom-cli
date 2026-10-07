@@ -1213,6 +1213,21 @@ _register(
         response_fields=["photoId", "steps"],
     ),
     CommandSchema(
+        "catalog.probeApi",
+        "catalog.probe-api",
+        "DIAGNOSTIC, read-only: list the methods Lightroom exposes on the catalog and on a keyword (never calls them)",
+        params=[
+            ParamSchema(
+                "keywordId",
+                ParamType.INTEGER,
+                required=False,
+                description="Keyword to probe (AgLibraryKeyword.id_local); default: the first top-level keyword",
+            ),
+        ],
+        mutating=False,
+        response_fields=["keywordId", "keywordName", "objects"],
+    ),
+    CommandSchema(
         "catalog.batchAddKeywords",
         "catalog.batch-add-keywords",
         "Add existing keywords (by id) to photos: up to 200 photo/keyword pairs in one write; never creates keywords",

@@ -198,6 +198,16 @@ def probe_photo(ctx, photo_id, **kwargs):
     execute_command(ctx, "catalog.probePhoto", {"photoId": photo_id})
 
 
+@catalog.command("probe-api")
+@click.option("--keyword-id", type=int, default=None, help="Keyword to probe (default: the first top-level keyword)")
+@json_input_options
+@click.pass_context
+def probe_api(ctx, keyword_id, **kwargs):
+    """DIAGNOSTIC, read-only: list the methods Lightroom exposes on the catalog and on a keyword; never calls them."""
+    params = {} if keyword_id is None else {"keywordId": keyword_id}
+    execute_command(ctx, "catalog.probeApi", params)
+
+
 def _keyword_pairs_command(ctx, pairs_file, catalog_path, kwargs, bridge_command):
     """Shared body of batch-add-keywords / batch-remove-keywords: read and check the pairs, then send them."""
     from lightroom_sdk.retry import calculate_batch_timeout

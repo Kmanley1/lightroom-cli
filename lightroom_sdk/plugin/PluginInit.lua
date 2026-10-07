@@ -210,7 +210,7 @@ local function registerSystemCommands()
                 version = "1.3.1",
                 -- Bump with every plugin change: `lr system ping` then shows which code Lightroom has actually
                 -- loaded (a Reload Plug-in that did not take is otherwise invisible -- 2026-10-07).
-                build = "2026-10-07c",
+                build = "2026-10-07e",
                 protocolVersion = "1"
             }
         })
@@ -369,6 +369,7 @@ local function registerApiCommands()
     router:register("catalog.batchRemoveKeywords", CatalogModule.batchRemoveKeywords, "sync")
     router:register("catalog.batchAddKeywords", CatalogModule.batchAddKeywords, "sync")
     router:register("catalog.probePhoto", CatalogModule.probePhoto, "sync")
+    router:register("catalog.probeApi", CatalogModule.probeApi, "sync")
     router:register("catalog.getFlag", CatalogModule.getFlag, "sync")
     router:register("catalog.setTitle", CatalogModule.setTitle, "sync")
     router:register("catalog.setCaption", CatalogModule.setCaption, "sync")
