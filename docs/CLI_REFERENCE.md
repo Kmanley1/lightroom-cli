@@ -3,11 +3,11 @@
 > Generated from `lightroom_sdk/schema.py` via `lr docs reference`. Do not edit by hand --
 > regenerate after any schema change.
 
-**150 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
+**151 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
 
 ## Groups
 
-- [`catalog`](#catalog) -- 45 commands
+- [`catalog`](#catalog) -- 46 commands
 - [`develop`](#develop) -- 71 commands
 - [`export`](#export) -- 1 commands
 - [`plugin`](#plugin) -- 3 commands
@@ -340,6 +340,22 @@ List photos in catalog
 | `offset` | integer |  | `0` | Number of results to skip for pagination |
 
 **Response fields:** `photos`, `total`, `limit`, `offset`
+
+### `lr catalog move-keyword`
+
+Move a keyword inside another keyword or to the top level (re-read by id: same keyword, photos, children)
+
+**MCP tool:** `lr_catalog_move_keyword`  -  **bridge:** `catalog.moveKeyword`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `keywordId` | integer | yes |  | Keyword to move (AgLibraryKeyword.id_local) |
+| `parentId` | integer |  |  | Move it inside the keyword with this id |
+| `parent` | string |  |  | Move it inside the keyword with this exact name; must name exactly one keyword |
+| `toTop` | boolean |  |  | Move it to the top level of the Keyword List |
+| `catalogPath` | string |  |  | Refuse (WRONG_CATALOG) unless the open catalog is this .lrcat file |
+
+**Response fields:** `id`, `keyword`, `moved`, `fromParentId`, `fromParentName`, `parentId`, `parentName`, `photoCount`, `childCount`, `writeStatus`
 
 ### `lr catalog probe-api`
 

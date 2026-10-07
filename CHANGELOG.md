@@ -34,6 +34,20 @@ All notable changes to this project will be documented in this file.
   method" only from a complete listing; otherwise only the looked-up candidates are conclusive.
 
 ### Added
+- **`catalog move-keyword <id> --parent-id N | --parent <exact name> | --to-top [--catalog-path P]`** (2026-10-07)
+  -- move a keyword inside another keyword or to the top level, keeping its id, photos and child keywords. Uses
+  `LrKeyword:setParent`, which `catalog probe-api` found on LrC 15 although Adobe documents no way to move a
+  keyword -- so nothing about it is trusted: afterwards the keyword is re-read BY ID, and only the same keyword,
+  directly in the target, with the same photo and child counts and no second keyword of its name, counts as
+  moved; anything else is an error naming where it really is (`PLACEMENT_MISMATCH`, `MOVE_CHANGED_KEYWORD`,
+  `KEYWORD_LOST`, `OPERATION_FAILED` with the read-back). Refuses a target inside the keyword itself
+  (`INVALID_MOVE`) or one already holding a keyword of the same name, any capitals (`NAME_EXISTS_IN_TARGET`);
+  already there = `moved: false`, no write.
+  Verified live 2026-10-07 (Madelyn's catalog, LrC 15, build 2026-10-07f), each step checked in the catalog FILE
+  (whole keyword table diffed; only the moved keyword's parent and genealogy and its descendants' genealogy may
+  change): a throwaway with a child moved into a nested keyword, then `--to-top` (setParent(nil) = top level,
+  parent = the root row -- not detached), then back with one photo tagged (the same photo stayed tagged); then
+  `shared:cross-library` moved into `Shared`. Every child's genealogy was rewritten by Lightroom itself.
 - **`catalog batch-add-keywords --pairs-file F [--catalog-path P]`** (2026-10-06) -- the mirror of
   `batch-remove-keywords`: add EXISTING keywords, by id, to photos -- up to 200 photo/keyword pairs in one write.
   Never creates a keyword (an id not in the catalog is `keyword_not_found`), unlike `batch-set --keyword`, which

@@ -2426,6 +2426,264 @@ function CatalogModule.createKeyword(params, callback)
     end
 end
 
+-- Pure: the keyword whose localIdentifier is `id`, and the parent the walk found it under (nil = top level).
+-- Unit-testable.
+function CatalogModule._findKeywordWithParent(keywords, id, parent)
+    if type(keywords) ~= "table" or id == nil then return nil end
+    for _, kw in ipairs(keywords) do
+        if kw.localIdentifier == id then return kw, parent end
+        if kw.getChildren then
+            local found, p = CatalogModule._findKeywordWithParent(kw:getChildren(), id, kw)
+            if found then return found, p end
+        end
+    end
+    return nil
+end
+
+-- Pure: the set of localIdentifiers in a list of SDK objects, and its size. Unit-testable.
+function CatalogModule._idSet(list)
+    local s, n = {}, 0
+    for _, x in ipairs(list or {}) do
+        local id = x.localIdentifier
+        if id ~= nil and not s[id] then
+            s[id] = true
+            n = n + 1
+        end
+    end
+    return s, n
+end
+
+-- Pure: do two id sets hold exactly the same ids? Unit-testable.
+function CatalogModule._sameIdSet(a, na, b, nb)
+    if na ~= nb then return false end
+    for k in pairs(a) do if not b[k] then return false end end
+    return true
+end
+
+-- catalog.moveKeyword -- move an existing keyword INSIDE another keyword, or to the top level (2026-10-07).
+-- Uses LrKeyword:setParent, which `catalog probe-api` found on LrC 15 (2026-10-07) although Adobe documents no way to
+-- move a keyword and the April 2026 note said there was none. So nothing about it is trusted: the keyword is
+-- re-found BY ID after the write, and the move counts only if it is the same keyword (same id), directly inside the
+-- requested parent, with the SAME photos and child keywords (compared as id sets -- review 2026-10-07: counts
+-- alone would pass a swap), and no second keyword of its name appeared.
+-- Target: parentId, parent (an exact name naming exactly one keyword), or toTop. Refuses: the keyword itself or one
+-- of its own descendants as the target (INVALID_MOVE); a keyword of the same name, any capitals, already directly
+-- in the target (NAME_EXISTS_IN_TARGET -- LrC keeps names unique per parent). Already there: moved=false, no write.
+-- Optional catalogPath: refuse unless that catalog is open (keyword ids are per catalog).
+-- Response: id, keyword, moved, fromParentId, fromParentName, parentId, parentName (both nil = top level),
+-- photoCount, childCount, writeStatus.
+function CatalogModule.moveKeyword(params, callback)
+    ensureLrModules()
+    params = params or {}
+    local keywordId = tonumber(params.keywordId)
+    if not keywordId then
+        callback(ErrorUtils.createError("MISSING_PARAM", "keywordId (a number) is required"))
+        return
+    end
+    local toTop = params.toTop == true
+    local given = (params.parentId ~= nil and 1 or 0) + (params.parent ~= nil and 1 or 0) + (toTop and 1 or 0)
+    if given ~= 1 then
+        callback(ErrorUtils.createError("INVALID_PARAM", "Give exactly one of parentId, parent or toTop"))
+        return
+    end
+    local parentId = nil
+    if params.parentId ~= nil then
+        parentId = tonumber(params.parentId)
+        if not parentId then
+            callback(ErrorUtils.createError("INVALID_PARAM", "parentId must be a number"))
+            return
+        end
+    end
+    local parentName = params.parent
+    if parentName ~= nil and (type(parentName) ~= "string" or parentName == "") then
+        callback(ErrorUtils.createError("INVALID_PARAM_VALUE", "parent must be a non-empty keyword name"))
+        return
+    end
+    local catalog = LrApplication.activeCatalog()
+    if params.catalogPath ~= nil then
+        local okPath, open = ErrorUtils.safeCall(function() return catalog:getPath() end)
+        if not okPath or not CatalogModule._samePath(open, params.catalogPath) then
+            callback(ErrorUtils.createError("WRONG_CATALOG", "Open catalog is '" .. tostring(open)
+                .. "', expected '" .. tostring(params.catalogPath) .. "' -- nothing changed"))
+            return
+        end
+    end
+    local opResult, opError = nil, nil
+    local idOf = function(k) return k and k.localIdentifier end
+    local function where(pid, pname)
+        if pid == nil then return "the top level" end
+        return "'" .. tostring(pname) .. "' (id " .. tostring(pid) .. ")"
+    end
+    local ok, err = ErrorUtils.safeCall(function()
+        -- 1. The keyword, where it is now, and the target (read txn).
+        -- Names are read here, inside the transaction; later steps use only ids and these strings.
+        local kw, fromParent, target, targetName, hits, near, name, sameBefore, cycle
+        local photosBefore, nPhotosBefore, kidsBefore, nKidsBefore
+        local fromId, fromName
+        local inTarget = {}
+        catalog:withReadAccessDo(function()
+            local all = catalog:getKeywords()
+            kw, fromParent = CatalogModule._findKeywordWithParent(all, keywordId)
+            if not kw then return end
+            name = kw:getName()
+            fromId, fromName = CatalogModule._placeOf(fromParent)
+            if parentId then
+                target = CatalogModule._findKeywordById(all, parentId)
+            elseif parentName then
+                hits, near = {}, {}
+                for _, m in ipairs(CatalogModule._findKeywordsNamedCI(all, parentName)) do
+                    local mname = m.kw:getName()
+                    table.insert(mname == parentName and hits or near, { id = idOf(m.kw), name = mname, kw = m.kw })
+                end
+                if #hits == 1 then target = hits[1].kw end
+            end
+            if target then
+                targetName = target:getName()
+                cycle = idOf(target) == keywordId
+                    or CatalogModule._findKeywordById(kw:getChildren(), idOf(target)) ~= nil
+            end
+            local siblings = toTop and all or (target and target:getChildren()) or {}
+            for _, s in ipairs(siblings) do
+                local sname = s:getName()
+                if idOf(s) ~= keywordId and type(sname) == "string" and sname:lower() == name:lower() then
+                    table.insert(inTarget, { id = idOf(s), name = sname })
+                end
+            end
+            photosBefore, nPhotosBefore = CatalogModule._idSet(kw:getPhotos())
+            kidsBefore, nKidsBefore = CatalogModule._idSet(kw:getChildren())
+            sameBefore = #CatalogModule._findKeywordsNamedCI(all, name)
+        end)
+        if not kw then
+            opError = { code = "KEYWORD_NOT_FOUND",
+                message = "No keyword with id " .. keywordId .. " -- nothing changed" }
+            return
+        end
+        if not toTop and not target then
+            if hits and #hits > 1 then
+                local ids = {}
+                for _, m in ipairs(hits) do table.insert(ids, tostring(m.id)) end
+                opError = { code = "PARENT_AMBIGUOUS", message = "Parent '" .. parentName .. "' names " .. #hits
+                    .. " keywords (ids " .. table.concat(ids, ", ") .. ") -- use parentId" }
+            elseif near and #near > 0 then
+                local d = {}
+                for _, m in ipairs(near) do
+                    table.insert(d, "'" .. tostring(m.name) .. "' (id " .. tostring(m.id) .. ")")
+                end
+                opError = { code = "PARENT_NOT_FOUND", message = "No keyword is named exactly '" .. parentName
+                    .. "'; in other capitals: " .. table.concat(d, "; ") .. " -- use that exact name or its id" }
+            else
+                opError = { code = "PARENT_NOT_FOUND", message = "Parent keyword "
+                    .. (parentId and ("id " .. tostring(parentId)) or ("'" .. tostring(parentName) .. "'"))
+                    .. " not found -- nothing changed" }
+            end
+            return
+        end
+        if cycle then
+            opError = { code = "INVALID_MOVE", message = "Cannot move '" .. name .. "' into itself or into one of "
+                .. "its own descendants -- nothing changed" }
+            return
+        end
+        local wantId = (not toTop) and idOf(target) or nil
+        local wantName = (not toTop) and targetName or nil
+        if fromId == wantId then
+            opResult = { id = keywordId, keyword = name, moved = false, fromParentId = fromId,
+                fromParentName = fromName, parentId = fromId, parentName = fromName, photoCount = nPhotosBefore,
+                childCount = nKidsBefore,
+                message = "Already under " .. where(fromId, fromName) .. " -- nothing changed" }
+            return
+        end
+        if #inTarget > 0 then
+            local d = {}
+            for _, s in ipairs(inTarget) do
+                table.insert(d, "'" .. tostring(s.name) .. "' (id " .. tostring(s.id) .. ")")
+            end
+            opError = { code = "NAME_EXISTS_IN_TARGET", message = where(wantId, wantName) .. " already holds "
+                .. table.concat(d, "; ") .. " -- rename or merge first; nothing changed" }
+            return
+        end
+        -- 2. Move (write txn). Both are re-found by id inside the transaction; `entered` is set inside the closure,
+        --    so a write that never ran cannot read as one that did. A failing setParent is caught so step 3 runs.
+        local entered, status, vanished = false, nil, false
+        local callOk, callErr = ErrorUtils.safeCall(function()
+            status = catalog:withWriteAccessDo("Move Keyword", function()
+                entered = true
+                local all = catalog:getKeywords()
+                local k = CatalogModule._findKeywordById(all, keywordId)
+                local t = nil
+                if not toTop then t = CatalogModule._findKeywordById(all, wantId) end
+                if not k or (not toTop and not t) then
+                    vanished = true
+                    error("the keyword or its target vanished before the move")
+                end
+                k:setParent(t)
+            end, { timeout = 10 })
+        end)
+        -- 3. Read back BY ID: is it the same keyword, where is it, are its photos and children intact, and did a
+        --    second keyword of its name appear?
+        local after, afterParent, photosAfter, nPhotosAfter, kidsAfter, nKidsAfter, sameAfter, nowId, nowName
+        catalog:withReadAccessDo(function()
+            local all = catalog:getKeywords()
+            after, afterParent = CatalogModule._findKeywordWithParent(all, keywordId)
+            if after then
+                photosAfter, nPhotosAfter = CatalogModule._idSet(after:getPhotos())
+                kidsAfter, nKidsAfter = CatalogModule._idSet(after:getChildren())
+                nowId, nowName = CatalogModule._placeOf(afterParent)
+            end
+            sameAfter = #CatalogModule._findKeywordsNamedCI(all, name)
+        end)
+        local nowWhere = after and where(nowId, nowName) or "nowhere: id " .. keywordId .. " is no longer in the tree"
+        if not callOk or not entered then
+            local why
+            if vanished then
+                why = "The keyword or its target vanished before setParent was called"
+            elseif not callOk then
+                why = "setParent failed: " .. tostring(callErr)
+            elseif status == "queued" then
+                why = "Lightroom queued the write instead of running it -- it may still happen; re-run to see"
+            else
+                why = "The write did not run (catalog busy?)"
+            end
+            opError = { code = "OPERATION_FAILED",
+                message = why .. ". Read back: '" .. name .. "' is under " .. nowWhere }
+            return
+        end
+        if not after then
+            opError = { code = "KEYWORD_LOST", message = "After setParent, keyword id " .. keywordId .. " ('" .. name
+                .. "') is no longer in the tree; keywords named '" .. name .. "' now: " .. tostring(sameAfter)
+                .. " (before: " .. tostring(sameBefore) .. ") -- check the Keyword List" }
+            return
+        end
+        local copies = sameAfter ~= sameBefore and ("; keywords named '" .. name .. "': " .. tostring(sameBefore)
+            .. " -> " .. tostring(sameAfter) .. " (a copy may have been made)") or ""
+        if nowId ~= wantId then
+            opError = { code = "PLACEMENT_MISMATCH", message = "'" .. name .. "' is under " .. nowWhere .. ", not "
+                .. where(wantId, wantName) .. " (it was under " .. where(fromId, fromName) .. ")" .. copies }
+            return
+        end
+        local samePhotos = CatalogModule._sameIdSet(photosBefore, nPhotosBefore, photosAfter, nPhotosAfter)
+        local sameKids = CatalogModule._sameIdSet(kidsBefore, nKidsBefore, kidsAfter, nKidsAfter)
+        if not samePhotos or not sameKids or sameAfter ~= sameBefore then
+            opError = { code = "MOVE_CHANGED_KEYWORD", message = "'" .. name .. "' moved to " .. nowWhere
+                .. " but changed: photos " .. tostring(nPhotosBefore) .. " -> " .. tostring(nPhotosAfter)
+                .. (samePhotos and "" or " (not the same photos)")
+                .. ", child keywords " .. tostring(nKidsBefore) .. " -> " .. tostring(nKidsAfter)
+                .. (sameKids and "" or " (not the same children)")
+                .. ", keywords with this name " .. tostring(sameBefore) .. " -> " .. tostring(sameAfter) }
+            return
+        end
+        opResult = { id = keywordId, keyword = name, moved = true, fromParentId = fromId, fromParentName = fromName,
+            parentId = nowId, parentName = nowName, photoCount = nPhotosAfter, childCount = nKidsAfter,
+            writeStatus = status, message = "Moved from " .. where(fromId, fromName) .. " to " .. nowWhere }
+    end)
+    if not ok then
+        callback(ErrorUtils.createError("OPERATION_FAILED", tostring(err)))
+    elseif opError then
+        callback(ErrorUtils.createError(opError.code, opError.message))
+    else
+        callback(ErrorUtils.createSuccess(opResult))
+    end
+end
+
 function CatalogModule.removeKeyword(params, callback)
     ensureLrModules()
     local photoId = params.photoId

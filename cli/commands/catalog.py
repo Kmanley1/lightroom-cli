@@ -685,6 +685,36 @@ def create_keyword(ctx, keyword, parent_id, parent_name, no_export, catalog_path
     execute_command(ctx, "catalog.createKeyword", params)
 
 
+@catalog.command("move-keyword")
+@click.argument("keyword_id", type=int)
+@click.option("--parent-id", type=int, default=None, help="Move it inside the keyword with this id")
+@click.option("--parent", "parent_name", default=None,
+              help="Move it inside the keyword with this exact name (must name exactly one keyword)")
+@click.option("--to-top", is_flag=True, default=False, help="Move it to the top level of the Keyword List")
+@click.option("--catalog-path", default=None, help="Refuse unless Lightroom has this .lrcat open")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def move_keyword(ctx, keyword_id, parent_id, parent_name, to_top, catalog_path, dry_run, **kwargs):
+    """Move a keyword inside another keyword, or to the top level; it keeps its id, photos and children.
+
+    Give exactly one of --parent-id, --parent or --to-top. Afterwards the keyword is re-read by id: it must sit
+    directly in the target with the same photo and child counts, else an error says where it is and what changed.
+    Refuses a target inside the keyword itself, or one already holding a keyword of the same name (any capitals).
+    Already there: moved=false, nothing written. Catalog only.
+    """
+    params = {"keywordId": keyword_id}
+    if parent_id is not None:
+        params["parentId"] = parent_id
+    if parent_name is not None:
+        params["parent"] = parent_name
+    if to_top:
+        params["toTop"] = True
+    if catalog_path:
+        params["catalogPath"] = catalog_path
+    execute_command(ctx, "catalog.moveKeyword", params)
+
+
 @catalog.command("remove-keyword")
 @click.argument("photo_id")
 @click.argument("keyword")
