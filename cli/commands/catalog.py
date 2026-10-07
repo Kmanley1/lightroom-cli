@@ -164,6 +164,33 @@ def batch_remove_keywords(ctx, pairs_file, catalog_path, dry_run, **kwargs):
     the photo before and after the write; a photo whose keyword count changed by anything else is listed in
     collateralPhotos. Catalog only; the keyword objects stay. Check `complete` in the result.
     """
+    _keyword_pairs_command(ctx, pairs_file, catalog_path, kwargs, "catalog.batchRemoveKeywords")
+
+
+@catalog.command("batch-add-keywords")
+@click.option(
+    "--pairs-file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help='JSON file: [[photoId, keywordId], ...] or [{"photoId":..,"keywordId":..}, ...] (max 200 distinct pairs)',
+)
+@click.option("--catalog-path", default=None, help="Refuse unless Lightroom has this .lrcat open (ids are per-catalog)")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
+@json_input_options
+@click.pass_context
+def batch_add_keywords(ctx, pairs_file, catalog_path, dry_run, **kwargs):
+    """Add EXISTING keywords (by id) to photos: up to 200 photo/keyword pairs in one write.
+
+    Never creates a keyword: an id not in the catalog is keyword_not_found (unlike batch-set --keyword, which goes
+    by name and creates a missing one). Each pair's status (added / already_on_photo / photo_not_found /
+    keyword_not_found / not_added / unverified) comes from reading the photo before and after the write; a photo
+    whose keyword count changed by anything else is listed in collateralPhotos. Catalog only. Check `complete`.
+    """
+    _keyword_pairs_command(ctx, pairs_file, catalog_path, kwargs, "catalog.batchAddKeywords")
+
+
+def _keyword_pairs_command(ctx, pairs_file, catalog_path, kwargs, bridge_command):
+    """Shared body of batch-add-keywords / batch-remove-keywords: read and check the pairs, then send them."""
     from lightroom_sdk.retry import calculate_batch_timeout
 
     fmt = ctx.obj.get("output", "text") if ctx.obj else "text"
@@ -196,7 +223,7 @@ def batch_remove_keywords(ctx, pairs_file, catalog_path, dry_run, **kwargs):
     params = {"pairs": pairs}
     if catalog_path:
         params["catalogPath"] = catalog_path
-    execute_command(ctx, "catalog.batchRemoveKeywords", params, timeout=calculate_batch_timeout(200))
+    execute_command(ctx, bridge_command, params, timeout=calculate_batch_timeout(200))
 
 
 @catalog.command("get-flag")

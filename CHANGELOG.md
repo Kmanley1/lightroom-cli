@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **`catalog batch-add-keywords --pairs-file F [--catalog-path P]`** (2026-10-06) -- the mirror of
+  `batch-remove-keywords`: add EXISTING keywords, by id, to photos -- up to 200 photo/keyword pairs in one write.
+  Never creates a keyword (an id not in the catalog is `keyword_not_found`), unlike `batch-set --keyword`, which
+  matches by name and, when the name is missing, creates a keyword with Include on Export off wherever Lightroom
+  puts a parentless one. Each pair's status (`added` / `already_on_photo` / `photo_not_found` / `keyword_not_found` /
+  `not_added` / `unverified`) comes from reading the photo before and after the write; a photo whose keyword count
+  changed by anything else is in `collateralPhotos`. Nested keywords are found by walking the tree.
+  `complete` also requires every photo to be found (a tag that was asked for and did not land is never
+  "complete"; ids from another catalog would otherwise read as done) -- pass `--catalog-path` anyway.
+  `batch-remove-keywords` and `batch-add-keywords` now share one CLI body. Reviewed independently; verified live
+  that a photo with no keywords reads back as an empty list (so it can be tagged), via batch-remove on Carolyn's
+  catalog (`not_on_photo`, no write).
+
 ### Changed
 - **`catalog create-keyword` can create a keyword INSIDE a parent: `--parent-id <id>` or `--parent <exact name>`**
   (2026-10-06). Lightroom's `createKeyword` with no parent does not create at the top level — it lands under

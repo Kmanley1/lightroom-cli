@@ -3,11 +3,11 @@
 > Generated from `lightroom_sdk/schema.py` via `lr docs reference`. Do not edit by hand --
 > regenerate after any schema change.
 
-**147 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
+**148 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
 
 ## Groups
 
-- [`catalog`](#catalog) -- 42 commands
+- [`catalog`](#catalog) -- 43 commands
 - [`develop`](#develop) -- 71 commands
 - [`export`](#export) -- 1 commands
 - [`plugin`](#plugin) -- 3 commands
@@ -42,6 +42,19 @@ Add photos to a collection by ID
 | `photoIds` | json_array | yes |  | Photo ID strings to add |
 
 **Response fields:** `collectionId`, `collectionName`, `photoCount`, `affected`, `requested`, `notFound`
+
+### `lr catalog batch-add-keywords`
+
+Add existing keywords (by id) to photos: up to 200 photo/keyword pairs in one write; never creates keywords
+
+**MCP tool:** `lr_catalog_batch_add_keywords`  -  **bridge:** `catalog.batchAddKeywords`  -  **risk:** write  -  **timeout:** 120s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `pairs` | json_array | yes |  | Array of {"photoId": int, "keywordId": int} (max 200 distinct pairs) |
+| `catalogPath` | string |  |  | Refuse (WRONG_CATALOG) unless the open catalog is this .lrcat file |
+
+**Response fields:** `requested`, `added`, `alreadyOnPhoto`, `photoNotFound`, `keywordNotFound`, `notAdded`, `unverified`, `collateralPhotos`, `complete`, `writeRan`, `writeError`, `results`
 
 ### `lr catalog batch-metadata`
 

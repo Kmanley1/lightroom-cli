@@ -2669,6 +2669,172 @@ function CatalogModule.batchRemoveKeywords(params, callback)
     }))
 end
 
+-- Pure: of the keyword TREE, the keywords whose localIdentifier is in the set `want`, as a map id -> keyword, in
+-- one walk. Unit-testable.
+function CatalogModule._keywordsInTreeById(keywords, want, found)
+    found = found or {}
+    if type(keywords) ~= "table" then return found end
+    for _, kw in ipairs(keywords) do
+        if kw.localIdentifier ~= nil and want[kw.localIdentifier] then found[kw.localIdentifier] = kw end
+        if kw.getChildren then CatalogModule._keywordsInTreeById(kw:getChildren(), want, found) end
+    end
+    return found
+end
+
+-- catalog.batchAddKeywords -- the mirror of batchRemoveKeywords (2026-10-06): add EXISTING keywords, by
+-- localIdentifier, to photos: up to 200 {photoId, keywordId} pairs per call, in ONE write transaction. It never
+-- creates a keyword -- an id that is not in the keyword tree is keyword_not_found -- unlike `batch-set --keyword`,
+-- which matches by NAME and creates the keyword (export off, wherever LrC puts a parentless one) when the name is
+-- missing. Every pair's outcome comes from reads: on the photo BEFORE the write and AFTER it, so a write that never
+-- ran or an add LrC ignored reports not_added -- never added; a keyword list that cannot be read reports unverified;
+-- if a photo's keyword COUNT changed by anything other than what was added to it, the photo is in collateralPhotos.
+-- Optional catalogPath: refuse unless the open catalog is that file (photo and keyword ids are per-catalog). No
+-- write transaction when nothing needs adding. Catalog only: files change on Save Metadata (or by auto-write).
+-- Response: requested, added, alreadyOnPhoto, photoNotFound, keywordNotFound, notAdded, unverified,
+-- collateralPhotos, complete, writeRan, writeError, results[{photoId, keywordId, status}].
+-- complete == (notAdded, unverified, keywordNotFound and photoNotFound all 0, and no collateralPhotos).
+-- Reviewed independently 2026-10-06; its findings are folded in.
+function CatalogModule.batchAddKeywords(params, callback)
+    ensureLrModules()
+    local groups, n, perr = CatalogModule._groupKeywordPairs(params and params.pairs, 200)
+    if not groups then
+        local list = params and params.pairs
+        local code = "MISSING_PARAM"  -- absent, not a table, or empty
+        if n then
+            code = "BATCH_SIZE_EXCEEDED"
+        elseif type(list) == "table" and #list > 0 then
+            code = "INVALID_PARAM_VALUE"
+        end
+        callback(ErrorUtils.createError(code, perr))
+        return
+    end
+    local catalog = LrApplication.activeCatalog()
+    if params.catalogPath ~= nil then
+        local okPath, open = ErrorUtils.safeCall(function() return catalog:getPath() end)
+        if not okPath or not CatalogModule._samePath(open, params.catalogPath) then
+            callback(ErrorUtils.createError("WRONG_CATALOG", "Open catalog is '" .. tostring(open)
+                .. "', expected '" .. tostring(params.catalogPath) .. "' -- nothing changed"))
+            return
+        end
+    end
+    local wantIds = {}
+    for _, g in ipairs(groups) do
+        for _, kid in ipairs(g.keywordIds) do wantIds[kid] = true end
+    end
+
+    -- state[photoId] = { row = {keywordId -> on the photo?}, count = n } | { unreadable = true } ; absent = not found
+    local function snapshot()
+        local state = {}
+        catalog:withReadAccessDo(function()
+            for _, g in ipairs(groups) do
+                local photo = catalog:getPhotoByLocalId(g.photoId)
+                if photo then
+                    local kws = photo:getRawMetadata("keywords")
+                    if type(kws) ~= "table" then
+                        state[g.photoId] = { unreadable = true }
+                    else
+                        local found = CatalogModule._keywordsById(kws, g.keywordIds)
+                        local row = {}
+                        for _, kid in ipairs(g.keywordIds) do row[kid] = found[kid] ~= nil end
+                        state[g.photoId] = { row = row, count = #kws }
+                    end
+                end
+            end
+        end)
+        return state
+    end
+
+    local okBefore, before, tree = ErrorUtils.safeCall(function()
+        local s = snapshot()
+        local t
+        catalog:withReadAccessDo(function() t = CatalogModule._keywordsInTreeById(catalog:getKeywords(), wantIds) end)
+        return s, t
+    end)
+    if not okBefore then
+        callback(ErrorUtils.createError("OPERATION_FAILED", "Could not read the photos' keywords: " .. tostring(before)))
+        return
+    end
+
+    local anyNeeded = false
+    for _, g in ipairs(groups) do
+        local b = before[g.photoId]
+        if b and b.row then
+            for _, kid in ipairs(g.keywordIds) do
+                if tree[kid] and not b.row[kid] then anyNeeded = true end
+            end
+        end
+    end
+
+    local writeRan, okWrite, writeErr = false, true, nil
+    if anyNeeded then
+        okWrite, writeErr = ErrorUtils.safeCall(function()
+            catalog:withWriteAccessDo("Batch Add Keywords", function()
+                writeRan = true
+                -- Re-resolve the keyword objects inside the write, as batch-set does (proven live).
+                local live = CatalogModule._keywordsInTreeById(catalog:getKeywords(), wantIds)
+                for _, g in ipairs(groups) do
+                    local b = before[g.photoId]
+                    if b and b.row then
+                        local photo = catalog:getPhotoByLocalId(g.photoId)
+                        for _, kid in ipairs(g.keywordIds) do
+                            if photo and live[kid] and not b.row[kid] then photo:addKeyword(live[kid]) end
+                        end
+                    end
+                end
+            end, { timeout = 60 })
+        end)
+    end
+
+    local okAfter, after = ErrorUtils.safeCall(snapshot)
+    local counts = { added = 0, alreadyOnPhoto = 0, photoNotFound = 0, keywordNotFound = 0, notAdded = 0,
+                     unverified = 0 }
+    local results, collateral = {}, {}
+    for _, g in ipairs(groups) do
+        local b = before[g.photoId]
+        local a = okAfter and after[g.photoId] or nil
+        local addedHere = 0
+        for _, kid in ipairs(g.keywordIds) do
+            local status
+            if not b then
+                status = "photo_not_found"; counts.photoNotFound = counts.photoNotFound + 1
+            elseif not b.row then
+                status = "unverified"; counts.unverified = counts.unverified + 1
+            elseif b.row[kid] then   -- before keyword_not_found: the photo's own list proves the keyword exists
+                status = "already_on_photo"; counts.alreadyOnPhoto = counts.alreadyOnPhoto + 1
+            elseif not tree[kid] then
+                status = "keyword_not_found"; counts.keywordNotFound = counts.keywordNotFound + 1
+            elseif not a or not a.row then
+                status = "unverified"; counts.unverified = counts.unverified + 1
+            elseif a.row[kid] then
+                status = "added"; counts.added = counts.added + 1; addedHere = addedHere + 1
+            else
+                status = "not_added"; counts.notAdded = counts.notAdded + 1
+            end
+            table.insert(results, { photoId = g.photoId, keywordId = kid, status = status })
+        end
+        if b and b.row and a and a.row and a.count ~= b.count + addedHere then
+            table.insert(collateral, g.photoId)
+        end
+    end
+    callback(ErrorUtils.createSuccess({
+        requested = n,
+        added = counts.added,
+        alreadyOnPhoto = counts.alreadyOnPhoto,
+        photoNotFound = counts.photoNotFound,
+        keywordNotFound = counts.keywordNotFound,
+        notAdded = counts.notAdded,
+        unverified = counts.unverified,
+        collateralPhotos = collateral,
+        -- Unlike batchRemoveKeywords, a photo that is not there makes the run incomplete: a tag that was asked for
+        -- did not land (ids from the wrong catalog would otherwise read as "complete" -- review 2026-10-06).
+        complete = counts.notAdded == 0 and counts.unverified == 0 and counts.keywordNotFound == 0
+            and counts.photoNotFound == 0 and #collateral == 0,
+        writeRan = writeRan,
+        writeError = (not okWrite) and tostring(writeErr) or nil,
+        results = results,
+    }))
+end
+
 -- Pure: return a keyword in `siblings`, other than `target`, whose name equals `newName` ignoring case.
 -- LrC enforces a unique (parent, lower-cased name) index on keywords, so renaming onto such a name would
 -- fail inside the write transaction. De-dating makes this likely ("2006_05_29 Wedding" -> "Wedding"). Unit-testable.
