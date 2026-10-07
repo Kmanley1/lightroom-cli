@@ -3,11 +3,11 @@
 > Generated from `lightroom_sdk/schema.py` via `lr docs reference`. Do not edit by hand --
 > regenerate after any schema change.
 
-**143 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
+**147 commands** across 7 groups. Every command is reachable both as a CLI verb and as an MCP tool.
 
 ## Groups
 
-- [`catalog`](#catalog) -- 38 commands
+- [`catalog`](#catalog) -- 42 commands
 - [`develop`](#develop) -- 71 commands
 - [`export`](#export) -- 1 commands
 - [`plugin`](#plugin) -- 3 commands
@@ -56,6 +56,19 @@ Get formatted metadata for multiple photos
 
 **Response fields:** `photos`, `keys`
 
+### `lr catalog batch-remove-keywords`
+
+Remove keywords (by id) from photos: up to 200 photo/keyword pairs in one write
+
+**MCP tool:** `lr_catalog_batch_remove_keywords`  -  **bridge:** `catalog.batchRemoveKeywords`  -  **risk:** write  -  **timeout:** 120s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `pairs` | json_array | yes |  | Array of {"photoId": int, "keywordId": int} (max 200 distinct pairs) |
+| `catalogPath` | string |  |  | Refuse (WRONG_CATALOG) unless the open catalog is this .lrcat file |
+
+**Response fields:** `requested`, `removed`, `notOnPhoto`, `photoNotFound`, `stillPresent`, `unverified`, `collateralPhotos`, `complete`, `writeRan`, `writeError`, `results`
+
 ### `lr catalog batch-set`
 
 Set metadata fields (rating/colorLabel/flag/title/caption/keywords) across many photos in one transaction
@@ -73,6 +86,19 @@ Set metadata fields (rating/colorLabel/flag/title/caption/keywords) across many 
 | `addKeywords` | json_array |  |  | Keyword names to add to every photo |
 
 **Response fields:** `total`, `succeeded`, `failed`, `results`
+
+### `lr catalog batch-set-flag`
+
+Set the same flag (pick/reject/none) on multiple photos in one call
+
+**MCP tool:** `lr_catalog_batch_set_flag`  -  **bridge:** `catalog.batchSetFlag`  -  **risk:** write  -  **timeout:** 120s  -  dry-run
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `photoIds` | json_array | yes |  | Array of photo IDs (max 50) |
+| `flag` | integer | yes |  | Flag value (1=pick, -1=reject, 0=none) |
+
+**Response fields:** `processed`, `succeeded`, `results`
 
 ### `lr catalog collection-photos`
 
@@ -114,23 +140,33 @@ Create a new collection (returns the new collection id)
 
 ### `lr catalog create-collection-set`
 
-Create a collection set
+Create a collection set (returns the new set's id)
 
 **MCP tool:** `lr_catalog_create_collection_set`  -  **bridge:** `catalog.createCollectionSet`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
 
 | Param | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `name` | string | yes |  | Collection set name |
+| `parentId` | integer |  |  | Parent collection-set id to nest under (top-level if omitted) |
+
+**Response fields:** `id`, `name`
 
 ### `lr catalog create-keyword`
 
-Create a keyword in catalog
+Create a keyword, optionally inside an existing parent keyword (reads back where it landed)
 
 **MCP tool:** `lr_catalog_create_keyword`  -  **bridge:** `catalog.createKeyword`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
 
 | Param | Type | Required | Default | Notes |
 |---|---|---|---|---|
 | `keyword` | string | yes |  | Keyword string to create |
+| `parentId` | integer |  |  | Create it inside the keyword with this id (AgLibraryKeyword.id_local) |
+| `parent` | string |  |  | Create it inside the keyword with this exact name; must name exactly one keyword |
+| `includeOnExport` | boolean |  |  | Lightroom's 'Include on Export' (default: true) |
+| `catalogPath` | string |  |  | Refuse (WRONG_CATALOG) unless the open catalog is this .lrcat file |
+| `allowDuplicateName` | boolean |  |  | Create even if the name (any capitals) exists elsewhere in the tree (default: false) |
+
+**Response fields:** `keyword`, `id`, `created`, `parentId`, `parentName`, `includeOnExport`, `includeOnExportRequested`, `placement`, `duplicatesElsewhere`
 
 ### `lr catalog create-smart-collection`
 
@@ -150,6 +186,18 @@ Create virtual copy of selected photo
 **MCP tool:** `lr_catalog_create_virtual_copy`  -  **bridge:** `catalog.createVirtualCopy`  -  **risk:** write  -  **timeout:** 30s  -  dry-run
 
 _No parameters._
+
+### `lr catalog delete-collection`
+
+Delete a collection or collection set by id (does not touch member photos)
+
+**MCP tool:** `lr_catalog_delete_collection`  -  **bridge:** `catalog.deleteCollection`  -  **risk:** write  -  **timeout:** 30s
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `collectionId` | integer | yes |  | Collection or collection-set id to delete |
+
+**Response fields:** `id`, `name`, `type`
 
 ### `lr catalog develop-presets`
 
@@ -313,6 +361,19 @@ Remove keyword from a photo
 |---|---|---|---|---|
 | `photoId` | string | yes |  | Photo ID (obtain via catalog list or get-selected) |
 | `keyword` | string | yes |  | Keyword string to remove |
+
+### `lr catalog rename-collection`
+
+Rename an existing collection by id
+
+**MCP tool:** `lr_catalog_rename_collection`  -  **bridge:** `catalog.renameCollection`  -  **risk:** write  -  **timeout:** 30s
+
+| Param | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `collectionId` | integer | yes |  | Collection id to rename |
+| `newName` | string | yes |  | New collection name |
+
+**Response fields:** `id`, `oldName`, `newName`
 
 ### `lr catalog rename-keyword`
 

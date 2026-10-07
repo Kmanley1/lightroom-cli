@@ -111,7 +111,10 @@ class TestDestructiveCreateKeyword:
     def test_create_keyword(self, run):
         """Test 129: Create keyword '_e2e_kw'."""
         r = run("catalog", "create-keyword", "_e2e_kw")
-        assert r["exit_code"] == 0, f"create-keyword failed: {r['output']}"
+        # The SDK cannot delete keywords, so `_e2e_kw` survives the first run; with no parent Lightroom puts it under
+        # the last-selected keyword, and since 2026-10-06 a later run is refused as KEYWORD_EXISTS_ELSEWHERE (unless
+        # it happens to be at the top level, then created=false). Either outcome proves the command works.
+        assert r["exit_code"] == 0 or "KEYWORD_EXISTS_ELSEWHERE" in r["output"], f"create-keyword failed: {r['output']}"
 
 
 @pytest.mark.e2e

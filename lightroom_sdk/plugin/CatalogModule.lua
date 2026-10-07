@@ -2200,23 +2200,229 @@ function CatalogModule.deleteCollection(params, callback)
     end
 end
 
+-- Pure: every keyword named `name` IGNORING CASE, anywhere in the tree, each with the parent it was found under
+-- (nil = top level). The parent comes from the walk itself, not getParent(), whose top-level answer is unverified.
+-- Unit-testable.
+function CatalogModule._findKeywordsNamedCI(keywords, name, parent, out)
+    out = out or {}
+    if type(keywords) ~= "table" or type(name) ~= "string" then return out end
+    local want = name:lower()
+    for _, kw in ipairs(keywords) do
+        local kname = kw.getName and kw:getName()
+        if type(kname) == "string" and kname:lower() == want then
+            table.insert(out, { kw = kw, parent = parent })
+        end
+        if kw.getChildren then
+            CatalogModule._findKeywordsNamedCI(kw:getChildren(), name, kw, out)
+        end
+    end
+    return out
+end
+
+-- Pure: id and name of a parent found by the walk, both nil for the top level. Unit-testable.
+function CatalogModule._placeOf(parent)
+    if parent == nil then return nil, nil end
+    return parent.localIdentifier, parent:getName()
+end
+
+-- catalog.createKeyword -- create a keyword, optionally INSIDE an existing parent keyword (2026-10-06).
+-- Why the parent matters: createKeyword(parent=nil) does not reliably create at the top level -- LrC puts the new
+-- keyword under whatever keyword was last selected in the Keyword List (memory reference_lrc_keyword_sdk_constraints,
+-- seen 2026-04-26); with an EXPLICIT parent it places correctly. So: parentId, or parent = an exact name that must
+-- match exactly one keyword. With neither, the keyword lands wherever LrC puts it and the response says where.
+-- Refuses (KEYWORD_EXISTS_ELSEWHERE) when a keyword with the same name -- in any capitals -- already exists elsewhere
+-- in the tree, because every by-name lookup then hits whichever comes first; allowDuplicateName overrides.
+-- Idempotent: the same name already directly inside the requested place returns that keyword, created=false, no
+-- write. Reads back where the new keyword actually sits; a requested parent it did not land in is PLACEMENT_MISMATCH
+-- (the keyword exists, in the wrong place -- fix it in the Keyword List). Optional catalogPath: refuse unless that
+-- catalog is open. includeOnExport defaults to true, LrC's own default. Names may not contain ',' or '|'.
+-- Response: keyword, id, created, parentId, parentName (both nil = top level), includeOnExport (READ from the
+-- keyword, not echoed -- nil if unreadable), includeOnExportRequested, placement ('as_requested' when a parent was
+-- given, 'unrequested' otherwise -- then check parentName), duplicatesElsewhere (same name, any capitals, elsewhere:
+-- only possible on created=false, or with allowDuplicateName). Reviewed independently 2026-10-06; findings folded.
 function CatalogModule.createKeyword(params, callback)
     ensureLrModules()
+    params = params or {}
     local keyword = params.keyword
-    if not keyword then
+    if keyword == nil then
         callback(ErrorUtils.createError("MISSING_PARAM", "Keyword is required"))
         return
     end
+    if type(keyword) ~= "string" or keyword:match("^%s*$") or keyword:find("[\r\n\t]")
+        or keyword:find("^%s") or keyword:find("%s$") or keyword:find("[,|]") then
+        callback(ErrorUtils.createError("INVALID_PARAM_VALUE",
+            "keyword must be non-blank, without leading/trailing spaces, tabs, line breaks, ',' or '|' "
+            .. "(Lightroom's own keyword separators)"))
+        return
+    end
+    if params.parentId ~= nil and params.parent ~= nil then
+        callback(ErrorUtils.createError("INVALID_PARAM", "Give parentId or parent, not both"))
+        return
+    end
+    local parentId = nil
+    if params.parentId ~= nil then
+        parentId = tonumber(params.parentId)
+        if not parentId then
+            callback(ErrorUtils.createError("INVALID_PARAM", "parentId must be a number"))
+            return
+        end
+    end
+    local parentName = params.parent
+    if parentName ~= nil and (type(parentName) ~= "string" or parentName == "") then
+        callback(ErrorUtils.createError("INVALID_PARAM_VALUE", "parent must be a non-empty keyword name"))
+        return
+    end
+    local wantParent = parentId ~= nil or parentName ~= nil
+    local includeOnExport = params.includeOnExport ~= false
     local catalog = LrApplication.activeCatalog()
-    local success, err = ErrorUtils.safeCall(function()
-        catalog:withWriteAccessDo("Create Keyword", function()
-            catalog:createKeyword(keyword, {}, true, nil, true)
+    if params.catalogPath ~= nil then
+        local okPath, open = ErrorUtils.safeCall(function() return catalog:getPath() end)
+        if not okPath or not CatalogModule._samePath(open, params.catalogPath) then
+            callback(ErrorUtils.createError("WRONG_CATALOG", "Open catalog is '" .. tostring(open)
+                .. "', expected '" .. tostring(params.catalogPath) .. "' -- nothing changed"))
+            return
+        end
+    end
+    local opResult, opError = nil, nil
+    local idOf = function(k) return k and k.localIdentifier end
+    -- The keyword's REAL Include-on-Export, read from Lightroom (call inside a read txn); nil when unreadable.
+    -- LrKeyword:getAttributes().includeOnExport -- verified live 2026-10-06 (read back true; catalog column = 1).
+    -- ErrorUtils.safeCall (LrTasks.pcall), not plain pcall: an SDK call that yields cannot run under plain pcall --
+    -- live 2026-10-06, plain pcall read back nothing while the catalog said includeOnExport = 1.
+    local function exportFlag(kw)
+        if not (kw and kw.getAttributes) then return nil end
+        local okA, attrs = ErrorUtils.safeCall(function() return kw:getAttributes() end)
+        if okA and type(attrs) == "table" then return attrs.includeOnExport end
+        return nil
+    end
+    local function describe(m)
+        local _, pname = CatalogModule._placeOf(m.parent)
+        return "'" .. tostring(m.kw:getName()) .. "' (id " .. tostring(idOf(m.kw)) .. ") under "
+            .. (pname and ("'" .. pname .. "'") or "the top level")
+    end
+    local function exportNote(actual)
+        if actual == nil or actual == includeOnExport then return "" end
+        return "; its Include on Export is " .. tostring(actual) .. ", not the requested " .. tostring(includeOnExport)
+            .. " -- change it in the Keyword List"
+    end
+    local ok, err = ErrorUtils.safeCall(function()
+        -- 1. Resolve the parent and every keyword already holding the name, with its real export flag (read txn).
+        local parentKw, parentHits, parentNear, matches
+        catalog:withReadAccessDo(function()
+            local all = catalog:getKeywords()
+            if parentId then
+                parentKw = CatalogModule._findKeywordById(all, parentId)
+            elseif parentName then
+                parentHits, parentNear = {}, {}
+                for _, m in ipairs(CatalogModule._findKeywordsNamedCI(all, parentName)) do
+                    table.insert(m.kw:getName() == parentName and parentHits or parentNear, m)
+                end
+                if #parentHits == 1 then parentKw = parentHits[1].kw end
+            end
+            matches = CatalogModule._findKeywordsNamedCI(all, keyword)
+            for _, m in ipairs(matches) do m.inc = exportFlag(m.kw) end
+        end)
+        if wantParent and not parentKw then
+            if parentHits and #parentHits > 1 then
+                local ids = {}
+                for _, m in ipairs(parentHits) do table.insert(ids, tostring(idOf(m.kw))) end
+                opError = { code = "PARENT_AMBIGUOUS", message = "Parent '" .. parentName .. "' names "
+                    .. #parentHits .. " keywords (ids " .. table.concat(ids, ", ") .. ") -- use parentId" }
+            elseif parentNear and #parentNear > 0 then
+                local near = {}
+                for _, m in ipairs(parentNear) do table.insert(near, describe(m)) end
+                opError = { code = "PARENT_NOT_FOUND", message = "No keyword is named exactly '" .. parentName
+                    .. "'; in other capitals: " .. table.concat(near, "; ") .. " -- use that exact name or its id" }
+            else
+                opError = { code = "PARENT_NOT_FOUND", message = "Parent keyword "
+                    .. (parentId and ("id " .. tostring(parentId)) or ("'" .. tostring(parentName) .. "'"))
+                    .. " not found -- create it first (a top-level keyword needs Lightroom's own Keyword List)" }
+            end
+            return
+        end
+        -- 2. Already exactly where it was asked for? Return it, no write -- and say so if same-named keywords also
+        --    exist elsewhere, since every by-name lookup is then ambiguous.
+        for _, m in ipairs(matches) do
+            if m.kw:getName() == keyword and idOf(m.parent) == idOf(parentKw) then
+                local pid, pname = CatalogModule._placeOf(m.parent)
+                local others = {}
+                for _, o in ipairs(matches) do
+                    if idOf(o.kw) ~= idOf(m.kw) then
+                        local oid, oname = CatalogModule._placeOf(o.parent)
+                        table.insert(others, { id = idOf(o.kw), name = o.kw:getName(), parentId = oid, parentName = oname })
+                    end
+                end
+                local msg = "Keyword already exists there"
+                if #others > 0 then
+                    local d = {}
+                    for _, o in ipairs(matches) do if idOf(o.kw) ~= idOf(m.kw) then table.insert(d, describe(o)) end end
+                    msg = msg .. "; WARNING: same name also at " .. table.concat(d, "; ")
+                        .. " -- by-name lookups (batch-set --keyword) will hit whichever comes first"
+                end
+                opResult = { keyword = keyword, id = idOf(m.kw), created = false, parentId = pid, parentName = pname,
+                    includeOnExport = m.inc, includeOnExportRequested = includeOnExport,
+                    placement = wantParent and "as_requested" or "unrequested", duplicatesElsewhere = others,
+                    message = msg .. exportNote(m.inc) }
+                return
+            end
+        end
+        if #matches > 0 and params.allowDuplicateName ~= true then
+            local where = {}
+            for _, m in ipairs(matches) do table.insert(where, describe(m)) end
+            opError = { code = "KEYWORD_EXISTS_ELSEWHERE", message = "A keyword with this name already exists: "
+                .. table.concat(where, "; ") .. " -- move or rename that one, or pass allowDuplicateName" }
+            return
+        end
+        -- 3. Create (write txn). `written` is set INSIDE the closure, so a write that never runs can't report success.
+        local before = {}
+        for _, m in ipairs(matches) do before[idOf(m.kw)] = true end
+        local written = false
+        local status = catalog:withWriteAccessDo("Create Keyword", function()
+            catalog:createKeyword(keyword, {}, includeOnExport, parentKw, true)
+            written = true
         end, { timeout = 10 })
+        if not written then
+            if status == "queued" then
+                opError = { code = "OPERATION_FAILED", message = "Lightroom queued the write instead of running it -- "
+                    .. "the keyword may still be created; re-run this command (it is idempotent) to see" }
+            else
+                opError = { code = "OPERATION_FAILED", message = "The write did not run (catalog busy?) -- nothing created" }
+            end
+            return
+        end
+        -- 4. Read back where it actually landed, and its real export flag (read txn).
+        local made
+        catalog:withReadAccessDo(function()
+            for _, m in ipairs(CatalogModule._findKeywordsNamedCI(catalog:getKeywords(), keyword)) do
+                if m.kw:getName() == keyword and not before[idOf(m.kw)] then
+                    made = m
+                    made.inc = exportFlag(m.kw)
+                end
+            end
+        end)
+        if not made then
+            opError = { code = "OPERATION_FAILED", message = "The write ran but no new keyword was found on read-back"
+                .. (#matches > 0 and " (Lightroom may have handed back the existing same-named keyword instead)" or "") }
+            return
+        end
+        local pid, pname = CatalogModule._placeOf(made.parent)
+        if wantParent and pid ~= idOf(parentKw) then
+            opError = { code = "PLACEMENT_MISMATCH", message = "Created '" .. keyword .. "' (id " .. tostring(idOf(made.kw))
+                .. ") under " .. (pname and ("'" .. pname .. "'") or "the top level") .. ", not under '"
+                .. tostring(parentKw:getName()) .. "' -- move it in the Keyword List" }
+            return
+        end
+        opResult = { keyword = keyword, id = idOf(made.kw), created = true, parentId = pid, parentName = pname,
+            includeOnExport = made.inc, includeOnExportRequested = includeOnExport,
+            placement = wantParent and "as_requested" or "unrequested", duplicatesElsewhere = {},
+            message = "Keyword created" .. exportNote(made.inc) }
     end)
-    if success then
-        callback(ErrorUtils.createSuccess({ keyword = keyword, message = "Keyword created" }))
-    else
+    if not ok then
         callback(ErrorUtils.createError("OPERATION_FAILED", tostring(err)))
+    elseif opError then
+        callback(ErrorUtils.createError(opError.code, opError.message))
+    else
+        callback(ErrorUtils.createSuccess(opResult))
     end
 end
 

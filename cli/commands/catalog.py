@@ -606,12 +606,37 @@ def delete_collection(ctx, collection_id, **kwargs):
 
 @catalog.command("create-keyword")
 @click.argument("keyword")
+@click.option("--parent-id", type=int, default=None, help="Create it inside the keyword with this id")
+@click.option("--parent", "parent_name", default=None,
+              help="Create it inside the keyword with this exact name (must name exactly one keyword)")
+@click.option("--no-export", is_flag=True, default=False, help="Create it with 'Include on Export' unchecked")
+@click.option("--catalog-path", default=None, help="Refuse unless Lightroom has this .lrcat open")
+@click.option("--allow-duplicate-name", is_flag=True, default=False,
+              help="Create it even if a keyword with the same name (any capitals) exists elsewhere in the tree")
 @click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
 @json_input_options
 @click.pass_context
-def create_keyword(ctx, keyword, dry_run, **kwargs):
-    """Create a keyword in catalog"""
-    execute_command(ctx, "catalog.createKeyword", {"keyword": keyword})
+def create_keyword(ctx, keyword, parent_id, parent_name, no_export, catalog_path, allow_duplicate_name, dry_run,
+                   **kwargs):
+    """Create a keyword, optionally inside an existing parent keyword.
+
+    Give --parent-id or --parent: without one, Lightroom puts the keyword under whatever keyword was last selected in
+    its Keyword List, not at the top level (the response says where it landed). Refuses if the name already exists
+    elsewhere; returns the existing keyword (created=false) if it is already where you asked. Reads back the
+    placement: a keyword that landed outside the requested parent is PLACEMENT_MISMATCH.
+    """
+    params = {"keyword": keyword}
+    if parent_id is not None:
+        params["parentId"] = parent_id
+    if parent_name is not None:
+        params["parent"] = parent_name
+    if no_export:
+        params["includeOnExport"] = False
+    if catalog_path:
+        params["catalogPath"] = catalog_path
+    if allow_duplicate_name:
+        params["allowDuplicateName"] = True
+    execute_command(ctx, "catalog.createKeyword", params)
 
 
 @catalog.command("remove-keyword")

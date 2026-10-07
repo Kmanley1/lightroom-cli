@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **`catalog create-keyword` can create a keyword INSIDE a parent: `--parent-id <id>` or `--parent <exact name>`**
+  (2026-10-06). Lightroom's `createKeyword` with no parent does not create at the top level — it lands under
+  whatever keyword was last selected in the Keyword List; with an explicit parent it places correctly. The command
+  now reads back where the keyword actually landed (`parentId`, `parentName`, `placement` in the response) and
+  returns `PLACEMENT_MISMATCH` if it is not inside the requested parent. Also `--no-export` (Include on Export off)
+  and `--catalog-path` (refuse unless that catalog is open).
+- **Stricter:** `create-keyword` refuses (`KEYWORD_EXISTS_ELSEWHERE`) when a keyword with the same name — in any
+  capitals — already exists elsewhere in the tree; `--allow-duplicate-name` overrides. If the keyword already
+  exists exactly where asked, it is returned with `created: false` and nothing is written. A parent name that
+  matches more than one keyword is `PARENT_AMBIGUOUS` (use `--parent-id`); one that exists only in other
+  capitals is named in the `PARENT_NOT_FOUND` message. `includeOnExport` in the response is READ from the keyword
+  (`includeOnExportRequested` echoes the request); `duplicatesElsewhere` lists same-named keywords elsewhere when the
+  keyword already existed. Names containing `,` or `|` (Lightroom's separators) are refused. A write Lightroom
+  queues instead of running is reported as such (re-run: the command is idempotent).
+- Verified live 2026-10-06 (Carolyn's catalog): `shared:with-ken`, `shared:with-ethan`, `shared:with-madelyn`
+  created inside a top-level `Shared` via `--parent Shared`; placement confirmed in the catalog's SQLite; a repeat
+  returned `created: false` with no write; `includeOnExport` read back `true` (it needs `LrTasks.pcall` -- plain
+  `pcall` around `getAttributes()` read back nothing).
+
 ## [1.3.1] - 2026-10-01
 
 ### Added

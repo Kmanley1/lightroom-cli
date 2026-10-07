@@ -1741,17 +1741,49 @@ _register(
     CommandSchema(
         "catalog.createKeyword",
         "catalog.create-keyword",
-        "Create a keyword in catalog",
+        "Create a keyword, optionally inside an existing parent keyword (reads back where it landed)",
         params=[
             ParamSchema(
                 "keyword",
                 ParamType.STRING,
                 required=True,
                 description="Keyword string to create",
-            )
+            ),
+            ParamSchema(
+                "parentId",
+                ParamType.INTEGER,
+                required=False,
+                description="Create it inside the keyword with this id (AgLibraryKeyword.id_local)",
+            ),
+            ParamSchema(
+                "parent",
+                ParamType.STRING,
+                required=False,
+                description="Create it inside the keyword with this exact name; must name exactly one keyword",
+            ),
+            ParamSchema(
+                "includeOnExport",
+                ParamType.BOOLEAN,
+                required=False,
+                description="Lightroom's 'Include on Export' (default: true)",
+            ),
+            ParamSchema(
+                "catalogPath",
+                ParamType.STRING,
+                required=False,
+                description="Refuse (WRONG_CATALOG) unless the open catalog is this .lrcat file",
+            ),
+            ParamSchema(
+                "allowDuplicateName",
+                ParamType.BOOLEAN,
+                required=False,
+                description="Create even if the name (any capitals) exists elsewhere in the tree (default: false)",
+            ),
         ],
         mutating=True,
         supports_dry_run=True,
+        response_fields=["keyword", "id", "created", "parentId", "parentName", "includeOnExport",
+                         "includeOnExportRequested", "placement", "duplicatesElsewhere"],
     ),
     CommandSchema(
         "catalog.renameKeyword",
