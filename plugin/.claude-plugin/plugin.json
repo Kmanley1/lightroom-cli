@@ -1,6 +1,6 @@
 {
   "name": "lightroom-cli",
-  "version": "1.2.2",
+  "version": "1.3.1",
   "description": "Control Adobe Lightroom Classic via CLI — 107 commands for full Lightroom control",
   "author": {
     "name": "M.Endo",
