@@ -576,14 +576,18 @@ def batch_set(ctx, photo_ids, rating, color_label, flag, title, caption, keyword
 
 @catalog.command("save-metadata")
 @click.argument("photo_ids", nargs=-1, required=False)
+@click.option("--selection", is_flag=True, default=False,
+              help="Save Lightroom's current selection on purpose (a save without ids is refused)")
 @click.option("--dry-run", is_flag=True, default=False, help="Preview without executing")
 @json_input_options
 @click.pass_context
-def save_metadata(ctx, photo_ids, dry_run, **kwargs):
-    """Save catalog metadata to each photo's file XMP (current selection if no IDs are given)."""
+def save_metadata(ctx, photo_ids, selection, dry_run, **kwargs):
+    """Save catalog metadata to each photo's file XMP, by ID (--selection saves the current selection)."""
     params = {}
     if photo_ids:
         params["photoIds"] = list(photo_ids)
+    if selection:
+        params["selection"] = True
     execute_command(ctx, "catalog.saveMetadata", params, timeout=120.0)
 
 

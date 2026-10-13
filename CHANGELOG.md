@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **`catalog save-metadata` refuses to run without photo ids** (2026-10-12). An empty or missing `photoIds` made the
+  plugin save whatever Lightroom had selected -- the one unguarded bulk-save path. The guard sits in
+  `validate_params`, which the CLI (after any `--json` merge) and the MCP server both call before sending, so
+  `--json '{}'` and `{"photoIds": []}` are refused too; every id must be a real id (not null, "", 0). Saving the
+  selection on purpose: `--selection` (or `selection=true`), which is never sent to the plugin; ids and selection
+  together are refused. Plugin unchanged. Not guarded: Python code calling `LightroomClient` or the bridge
+  directly.
+- **`--dry-run` (CLI and MCP) now validates like the real run** and previews the parameters that would be sent;
+  before, a preview showed a call the real run refused.
+
 ### Fixed
 - **Every error printed a second line** `{"error": {"code": "ERROR", "message": "1"}}` (2026-10-06): `ctx.exit()`
   raises click's `Exit`, a `RuntimeError` subclass in Click 8, and `execute_command`'s `except Exception` caught it

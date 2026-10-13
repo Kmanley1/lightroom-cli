@@ -99,14 +99,22 @@ def execute_command(ctx, command: str, params: dict, *, timeout: float | None = 
     # dry-run チェック
     if getattr(ctx, "params", {}).get("dry_run", False):
         from lightroom_sdk.schema import get_schema
+        from lightroom_sdk.validation import ValidationError, validate_params
 
         schema = get_schema(command)
+        try:   # a preview must refuse what the real run refuses, and show what would be sent (2026-10-12)
+            shown = validate_params(command, {k: v for k, v in params.items() if v is not None})
+        except ValidationError as e:
+            click.echo(OutputFormatter.format_error(str(e), fmt, code="VALIDATION_ERROR",
+                                                    suggestions=e.suggestions), err=True)
+            ctx.exit(2)
+            return
         preview = {
             "dry_run": True,
             "command": command,
             "mutating": schema.mutating if schema else None,
             "risk_level": schema.risk_level if schema else None,
-            "params": {k: v for k, v in params.items() if v is not None},
+            "params": shown,
         }
         click.echo(OutputFormatter.format(preview, fmt))
         return

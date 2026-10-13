@@ -1704,13 +1704,19 @@ _register(
     CommandSchema(
         "catalog.saveMetadata",
         "catalog.save-metadata",
-        "Write catalog metadata to each photo's file XMP (by ID or current selection). "
-        "Read-from-file is intentionally not exposed -- it would overwrite catalog edits.",
+        "Write catalog metadata to each photo's file XMP, by ID. Saving Lightroom's current selection needs "
+        "selection=true -- a save without ids is refused. Read-from-file is intentionally not exposed -- it would "
+        "overwrite catalog edits.",
         params=[
             ParamSchema(
                 "photoIds",
                 ParamType.JSON_ARRAY,
-                description="Photo IDs; omit to use the current selection",
+                description="Photo IDs to save (required unless selection=true)",
+            ),
+            ParamSchema(
+                "selection",
+                ParamType.BOOLEAN,
+                description="Save the current selection on purpose (only without photoIds)",
             ),
         ],
         mutating=True,

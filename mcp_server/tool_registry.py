@@ -167,12 +167,19 @@ def create_tool_function(schema: CommandSchema, connection: "ConnectionManager |
 
         dry_run = kwargs.pop("dry_run", False)
         if dry_run and _schema.mutating:
+            from lightroom_sdk.validation import ValidationError, validate_params
+
+            try:   # a preview must refuse what the real run refuses (2026-10-12)
+                shown = validate_params(_schema.command, {k: v for k, v in kwargs.items() if v is not None})
+            except ValidationError as e:
+                return {"isError": True, "code": "VALIDATION_ERROR", "message": str(e),
+                        "suggestions": getattr(e, "suggestions", [])}
             return {
                 "dry_run": True,
                 "command": _schema.command,
                 "mutating": _schema.mutating,
                 "risk_level": _schema.risk_level,
-                "params": kwargs,
+                "params": shown,
             }
 
         # None のオプションパラメータを除去

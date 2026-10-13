@@ -62,7 +62,31 @@ def validate_params(command: str, params: dict) -> dict:
         param_schema = next(p for p in schema.params if p.name == key)
         validated[key] = _coerce_type(key, value, param_schema)
 
+    if command == "catalog.saveMetadata":
+        _guard_save_metadata(validated)
     return validated
+
+
+def _guard_save_metadata(validated: dict) -> None:
+    """A save with no photo ids saves whatever Lightroom has selected (an empty or missing photoIds means the
+    selection in CatalogModule.lua) -- the one unguarded bulk-save path (toolkit-lightroom risk A4, 2026-10-12).
+    Require ids, or selection=true to save the selection on purpose; never both. 'selection' is not sent."""
+    selection = validated.pop("selection", False)
+    ids = validated.get("photoIds")
+    if ids and selection:
+        raise ValidationError("catalog.saveMetadata: give photoIds or selection=true, not both", param="selection")
+    for i in ids or []:                     # a real id, not null / "" / [] / 0 (refute 2026-10-12)
+        real = (isinstance(i, int) and not isinstance(i, bool) and i > 0) or (
+            isinstance(i, str) and i.isdigit() and int(i) > 0)
+        if not real:
+            raise ValidationError(f"catalog.saveMetadata: {i!r} is not a photo id", param="photoIds")
+    if not ids and not selection:
+        raise ValidationError(
+            "catalog.saveMetadata needs photoIds -- without them Lightroom saves whatever is selected. "
+            "To save the current selection on purpose, pass selection=true (CLI: --selection).",
+            param="photoIds",
+            suggestions=["lr catalog save-metadata <photo ids>", "lr catalog save-metadata --selection"],
+        )
 
 
 def _check_range(name: str, value: int | float, schema: ParamSchema) -> None:

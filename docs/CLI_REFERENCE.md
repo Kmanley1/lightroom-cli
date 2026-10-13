@@ -457,13 +457,14 @@ _No parameters._
 
 ### `lr catalog save-metadata`
 
-Write catalog metadata to each photo's file XMP (by ID or current selection). Read-from-file is intentionally not exposed -- it would overwrite catalog edits.
+Write catalog metadata to each photo's file XMP, by ID. Saving Lightroom's current selection needs selection=true -- a save without ids is refused. Read-from-file is intentionally not exposed -- it would overwrite catalog edits.
 
 **MCP tool:** `lr_catalog_save_metadata`  -  **bridge:** `catalog.saveMetadata`  -  **risk:** write  -  **timeout:** 120s  -  dry-run
 
 | Param | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `photoIds` | json_array |  |  | Photo IDs; omit to use the current selection |
+| `photoIds` | json_array |  |  | Photo IDs to save (required unless selection=true) |
+| `selection` | boolean |  |  | Save the current selection on purpose (only without photoIds) |
 
 **Response fields:** `total`, `succeeded`, `failed`, `results`
 
