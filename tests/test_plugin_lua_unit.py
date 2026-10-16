@@ -398,7 +398,7 @@ class TestFindPhotosUnknownFilterKeyFailsClosed:
 class TestAddKeywordsFindsExistingKeyword:
     """addKeywords must reuse an existing keyword object, not spawn duplicates.
 
-    ``catalog:createKeyword(name, {}, false, nil, true)`` is parent-scoped and unreliable
+    ``catalog:createKeyword(name, {}, true, nil, true)`` is parent-scoped and unreliable
     for top-level reuse, so calling it per tag created duplicate keyword OBJECTS (the dup
     sets merged in production). The pure ``_findKeywordByName`` helper finds an existing
     keyword (recursively) so addKeywords reuses it.

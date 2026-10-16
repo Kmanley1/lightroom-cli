@@ -5,6 +5,9 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **`catalog add-keywords` and `batch-set --keyword` create a missing keyword with Include on Export ON**
+  (2026-10-16), Lightroom's own default and what `create-keyword` already did. Both passed `false`, so a keyword
+  they made was left out of every Export. Existing keywords are reused as they are; their flag is not touched.
 - **`catalog save-metadata` refuses to run without photo ids** (2026-10-12). An empty or missing `photoIds` made the
   plugin save whatever Lightroom had selected -- the one unguarded bulk-save path. The guard sits in
   `validate_params`, which the CLI (after any `--json` merge) and the MCP server both call before sending, so

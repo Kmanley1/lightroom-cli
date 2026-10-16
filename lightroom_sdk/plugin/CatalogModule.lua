@@ -1225,7 +1225,7 @@ end
 -- Recursively find an existing keyword by exact name in a keyword list (each element
 -- responds to :getName() and optionally :getChildren()). Returns the keyword or nil.
 -- Pure (no catalog access) so it is unit-testable. addKeywords uses it to reuse an
--- existing keyword object instead of catalog:createKeyword(name, {}, false, nil, true),
+-- existing keyword object instead of catalog:createKeyword(name, {}, true, nil, true),
 -- whose parent-scoped reuse is unreliable and silently spawns duplicate keyword objects.
 function CatalogModule._findKeywordByName(keywords, name)
     if type(keywords) ~= "table" or name == nil then return nil end
@@ -1286,7 +1286,8 @@ function CatalogModule.addKeywords(params, callback)
                 local keyword = createdThisCall[kwName]
                     or CatalogModule._findKeywordByName(existingKeywords, kwName)
                 if not keyword then
-                    keyword = catalog:createKeyword(kwName, {}, false, nil, true)
+                    -- includeOnExport = true, Lightroom's own default (Ken, 2026-10-16: write it to the file)
+                    keyword = catalog:createKeyword(kwName, {}, true, nil, true)
                     createdThisCall[kwName] = keyword
                 end
                 if keyword then
@@ -1367,7 +1368,7 @@ function CatalogModule.batchSetMetadata(params, callback)
                 local created = {}
                 for _, kwName in ipairs(params.addKeywords) do
                     local kw = created[kwName] or CatalogModule._findKeywordByName(existing, kwName)
-                    if not kw then kw = catalog:createKeyword(kwName, {}, false, nil, true); created[kwName] = kw end
+                    if not kw then kw = catalog:createKeyword(kwName, {}, true, nil, true); created[kwName] = kw end
                     if kw then table.insert(keywordObjs, kw) end
                 end
             end

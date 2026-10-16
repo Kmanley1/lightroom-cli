@@ -317,3 +317,45 @@ def test_schema_accepts_the_new_params():
                                                     "includeOnExport": False, "catalogPath": "x",
                                                     "allowDuplicateName": True})
     assert out["parentId"] == 10 and out["includeOnExport"] is False
+
+
+# ---- add-keywords / batch-set create keywords that export (2026-10-16) -------------------------------------------
+# Both paths created a missing keyword with includeOnExport = false, so a keyword made by `lr catalog add-keywords`
+# was left out of every Export. Ken, 2026-10-16: "just default it to write the keyword to the file" -- on, no option.
+
+PHOTO = """
+    PHOTO = { localIdentifier = 501, _kws = {} }
+    function PHOTO:addKeyword(k) table.insert(self._kws, k) end
+    function PHOTO:setRawMetadata() end
+    function CATALOG:getPhotoByLocalId(id) if id == 501 then return PHOTO end return nil end
+"""
+
+
+def _handler(cat, name, params_lua):
+    rt, module = cat
+    rt.execute(PHOTO)
+    captured = []
+    module[name](rt.eval("{ " + params_lua + " }"), lambda r: captured.append(r))
+    assert len(captured) == 1
+    return captured[0]
+
+
+def test_add_keywords_creates_a_new_keyword_that_exports(cat):
+    _ok(_handler(cat, "addKeywords", "photoId = 501, keywords = { 'brand-new' }"))
+    assert cat[0].eval("created_args.name") == "brand-new"
+    assert cat[0].eval("created_args.inc") is True
+    assert cat[0].eval("PHOTO._kws[1]._name") == "brand-new" and cat[0].eval("PHOTO._kws[1]._inc") is True
+
+
+def test_batch_set_creates_a_new_keyword_that_exports(cat):
+    _ok(_handler(cat, "batchSetMetadata", "photoIds = { 501 }, addKeywords = { 'brand-new' }"))
+    assert cat[0].eval("created_args.name") == "brand-new"
+    assert cat[0].eval("created_args.inc") is True
+    assert cat[0].eval("PHOTO._kws[1]._inc") is True
+
+
+def test_add_keywords_leaves_an_existing_keyword_as_it_is(cat):
+    cat[0].execute("PEOPLE._inc = false")
+    _ok(_handler(cat, "addKeywords", "photoId = 501, keywords = { 'People' }"))
+    assert cat[0].eval("created_args") is None                    # reused, not created
+    assert cat[0].eval("PHOTO._kws[1]._inc") is False             # and its flag not touched
