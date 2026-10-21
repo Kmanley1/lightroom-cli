@@ -582,13 +582,21 @@ def batch_set(ctx, photo_ids, rating, color_label, flag, title, caption, keyword
 @json_input_options
 @click.pass_context
 def save_metadata(ctx, photo_ids, selection, dry_run, **kwargs):
-    """Save catalog metadata to each photo's file XMP, by ID (--selection saves the current selection)."""
+    """Save catalog metadata to each photo's file XMP, by ID (--selection saves the current selection).
+
+    A photo counts as saved only when its file (or sidecar) changes on disk; exits 1 if any photo was not written.
+    """
     params = {}
     if photo_ids:
         params["photoIds"] = list(photo_ids)
     if selection:
         params["selection"] = True
-    execute_command(ctx, "catalog.saveMetadata", params, timeout=120.0)
+    execute_command(ctx, "catalog.saveMetadata", params, timeout=120.0, fail_if=_any_photo_failed)
+
+
+def _any_photo_failed(data) -> bool:
+    """A save result with a failed photo -- not written, file missing, not found -- is a failed command."""
+    return not isinstance(data, dict) or data.get("failed") != 0
 
 
 @catalog.command("import")

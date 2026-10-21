@@ -201,7 +201,8 @@ def test_catalog_batch_set(mock_get_bridge, runner):
 def test_catalog_save_metadata(mock_get_bridge, runner):
     """lr catalog save-metadata sends photoIds to catalog.saveMetadata."""
     mock_bridge = AsyncMock()
-    mock_bridge.send_command.return_value = {"id": "x", "success": True, "result": {}}
+    mock_bridge.send_command.return_value = {"id": "x", "success": True,
+                                             "result": {"total": 2, "succeeded": 2, "failed": 0, "results": []}}
     mock_get_bridge.return_value = mock_bridge
     result = runner.invoke(cli, ["catalog", "save-metadata", "1", "2"])
     assert result.exit_code == 0

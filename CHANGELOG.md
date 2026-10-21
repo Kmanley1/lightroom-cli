@@ -19,6 +19,24 @@ All notable changes to this project will be documented in this file.
   before, a preview showed a call the real run refused.
 
 ### Fixed
+- **`catalog save-metadata` reported success for files Lightroom never wrote** (2026-10-21). The plugin called
+  `photo:saveMetadata()` and counted any call that did not throw as saved, but Lightroom does not tell the plugin
+  when a write fails. Reproduced live in a test catalog: on a read-only file the call returned, the file stayed
+  untouched, Lightroom showed the user "Some save metadata operations were not performed", and the bridge said
+  `success: true`. A real photo had failed the same way the day before, with no message at all. A photo now counts
+  as saved only when the file Lightroom writes its metadata into has a different modification time afterwards:
+  the file itself for JPEG, TIFF, PSD and DNG, the `name.xmp` sidecar for raw and HEIC, either for video, PNG and
+  other formats. So a JPEG shot next to a raw cannot take the raw's sidecar for its own write. The plugin polls
+  while Lightroom keeps writing (a batch's last files land after the call returns), and gives up after 10 s without
+  a write or 60 s after the command started, saves included; photos not reached by then are not saved. A file
+  written moments before is first given 2 s to age, in case the disk keeps whole-second times. Each result now has
+  a `status`: `written` (with the `file` that changed), `not_written`, `error`, or one of the statuses for a photo
+  that was not saved: `file_missing`, `photo_not_found`, `virtual_copy` (Lightroom keeps a virtual copy's metadata
+  only in the catalog) and `skipped` (no path, a file time that could not be read, a failed lookup, or the time
+  ran out). `success` is true only for `written`. An id that is not in the catalog is reported `photo_not_found`
+  instead of being "saved" (it was looked up without the dud check, see 2026-10-07). The CLI exits 1 when any
+  photo failed, after printing the full result. Needs the plugin reinstalled (`lr plugin install`) and reloaded in
+  Lightroom.
 - **The e2e tests wrote into whatever catalog Lightroom had open** (2026-10-20). They skipped only when Lightroom
   was unreachable, so a run with a real catalog open changed real photos; one run left the title "E2E Test Title"
   and the snapshot `e2e_test_snap` in a photo's file. They now run only when Lightroom has the throwaway catalog

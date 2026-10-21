@@ -22,7 +22,8 @@ def runner():
 
 def _bridge(mock_get_bridge):
     b = AsyncMock()
-    b.send_command.return_value = {"id": "x", "success": True, "result": {}}
+    b.send_command.return_value = {"id": "x", "success": True,
+                                   "result": {"total": 1, "succeeded": 1, "failed": 0, "results": []}}
     mock_get_bridge.return_value = b
     return b
 

@@ -1411,23 +1411,108 @@ function CatalogModule.batchSetMetadata(params, callback)
     }))
 end
 
+-- A save counts only when the file on disk changes (2026-10-21). photo:saveMetadata() does not tell the plugin when
+-- Lightroom fails to write: live in the Test catalog, on a read-only file it returned normally, the file was left
+-- untouched, and Lightroom showed the user "Some save metadata operations were not performed" -- while the bridge
+-- reported success. A real photo (2026-10-20) failed the same way with no message at all. Lightroom also finishes a
+-- batch's last writes after the call returns (bulk run 2026-10-08: about a second later), so the check polls.
+CatalogModule.SAVE_IDLE_SECONDS = 10    -- give up once no pending file has been written for this long
+CatalogModule.SAVE_MAX_SECONDS = 60     -- the whole command, saves included, stops here (the CLI waits 120 s)
+CatalogModule.SAVE_SETTLE_SECONDS = 2   -- a file written this recently may share its time with our write
+CatalogModule.SAVE_POLL_SECONDS = 0.25
+
+-- Where Lightroom writes a photo's metadata, by its fileFormat: into the file itself (JPEG, TIFF, PSD, DNG) or into a
+-- name.xmp sidecar (raw; HEIC -- the HEIC copies in the Test catalog carry one). Video, PNG and anything else watch
+-- both. Only the photo's own files count: a JPEG shot next to a raw must not take the raw's sidecar for its write.
+local SAVE_IN_FILE = { JPG = true, TIFF = true, PSD = true, DNG = true }
+local SAVE_IN_SIDECAR = { RAW = true, HEIC = true }
+function CatalogModule._metadataTargets(path, fileFormat)
+    local sidecar = LrPathUtils.removeExtension(path) .. ".xmp"
+    if SAVE_IN_FILE[fileFormat] then return { path } end
+    if SAVE_IN_SIDECAR[fileFormat] then return { sidecar } end
+    return { path, sidecar }
+end
+
+-- Each target's modification time: false when the file is absent, "?" when it exists but its time cannot be read.
+function CatalogModule._fileStamps(targets)
+    local stamps = {}
+    for i, t in ipairs(targets) do
+        if not LrFileUtils.exists(t) then
+            stamps[i] = false
+        else
+            local ok, attrs = ErrorUtils.safeCall(LrFileUtils.fileAttributes, t)
+            local mtime = ok and type(attrs) == "table" and attrs.fileModificationDate  -- live 2026-10-21
+            stamps[i] = type(mtime) == "number" and mtime or "?"
+        end
+    end
+    return stamps
+end
+
+-- The first target written since `before` (it exists and has a different time), or nil.
+function CatalogModule._writtenTarget(targets, before, after)
+    for i, t in ipairs(targets) do
+        if type(after[i]) == "number" and after[i] ~= before[i] then return t end
+    end
+    return nil
+end
+
+local function nowSeconds()
+    if LrDate and LrDate.currentTime then return LrDate.currentTime() end
+    return os.time()
+end
+
+-- Keep the photos whose watched files all have a readable time; the rest are skipped, since a write to them could
+-- not be seen (a "?" before and a real time after would read as a write).
+local function keepReadable(pending)
+    local readable = {}
+    for _, e in ipairs(pending) do
+        local unreadable
+        for i, t in ipairs(e.targets) do
+            if e.before[i] == "?" then unreadable = unreadable or t end
+        end
+        if unreadable then
+            e.status, e.error = "skipped", "Not saved: could not read the modification time of " .. unreadable
+        else
+            table.insert(readable, e)
+        end
+    end
+    return readable
+end
+
 -- Save catalog metadata to each photo's file (XMP). Photos by id list or current selection.
 -- The READ direction (re-read file -> catalog) is intentionally NOT exposed: it overwrites catalog
 -- edits with file values, which is unsafe when LR is the source of truth and auto-write-XMP is on.
+-- Per photo: status written (with the file that changed) | not_written | file_missing | photo_not_found |
+-- virtual_copy | skipped | error. success is true only for written; all but not_written and error were never saved.
 function CatalogModule.saveMetadata(params, callback)
     ensureLrModules()
     params = params or {}
+    local start = nowSeconds()
     local catalog = LrApplication.activeCatalog()
-    local photos, notFound = {}, {}
+    local entries, notFound, lookupFailed = {}, {}, {}
     local resolveOk, resolveErr = ErrorUtils.safeCall(function()
         catalog:withReadAccessDo(function()
+            local photos = {}
             if params.photoIds and type(params.photoIds) == "table" and #params.photoIds > 0 then
                 for _, pid in ipairs(params.photoIds) do
-                    local p = catalog:getPhotoByLocalId(tonumber(pid))
-                    if p then table.insert(photos, p) else table.insert(notFound, tostring(pid)) end
+                    -- an unknown id returns a dud object, not nil (see _photoById): never "save" it
+                    local p, err = CatalogModule._photoById(catalog, pid)
+                    if p then
+                        table.insert(photos, p)
+                    elseif err then
+                        table.insert(lookupFailed, { photoId = tostring(pid), error = err })
+                    else
+                        table.insert(notFound, tostring(pid))
+                    end
                 end
             else
                 photos = CatalogModule._resolveSelection(catalog:getTargetPhoto(), catalog:getTargetPhotos())
+            end
+            for _, p in ipairs(photos) do
+                table.insert(entries, { photo = p, photoId = tostring(p.localIdentifier),
+                                        path = p:getRawMetadata("path"),
+                                        fileFormat = p:getRawMetadata("fileFormat"),
+                                        isVirtualCopy = p:getRawMetadata("isVirtualCopy") })
             end
         end)
     end)
@@ -1435,30 +1520,113 @@ function CatalogModule.saveMetadata(params, callback)
         callback(ErrorUtils.createError("OPERATION_FAILED", "Failed to resolve photos: " .. tostring(resolveErr)))
         return
     end
-    if #photos == 0 then
+    if #entries == 0 and #notFound == 0 and #lookupFailed == 0 then
         callback(ErrorUtils.createError("PHOTO_NOT_FOUND", "No photos to save (empty selection and no valid photoIds)"))
         return
     end
 
-    local succeeded, failed, results = 0, 0, {}
-    for _, photo in ipairs(photos) do
-        local pid = tostring(photo.localIdentifier)
-        local ok, err = ErrorUtils.safeCall(function()
-            photo:saveMetadata()  -- [SDK-VERIFY] writes catalog metadata to the file's XMP
-        end)
-        if ok then
-            succeeded = succeeded + 1
-            table.insert(results, { photoId = pid, success = true })
+    -- 1. Each watched file's time before the save. A virtual copy, or a photo whose file is gone, is not saved.
+    local pending = {}
+    for _, e in ipairs(entries) do
+        if e.isVirtualCopy then
+            e.status, e.error = "virtual_copy", "Not saved: Lightroom keeps a virtual copy's metadata only in the "
+                .. "catalog; the file gets the master photo's"
+        elseif type(e.path) ~= "string" or e.path == "" then
+            e.status, e.error = "skipped", "Not saved: Lightroom gave no file path for this photo"
+        elseif not LrFileUtils.exists(e.path) then
+            e.status, e.error = "file_missing", "Not saved: the photo's file is not on disk (offline or moved): "
+                .. e.path
         else
-            failed = failed + 1
-            table.insert(results, { photoId = pid, success = false, error = tostring(err) })
+            e.targets = CatalogModule._metadataTargets(e.path, e.fileFormat)
+            e.before = CatalogModule._fileStamps(e.targets)
+            table.insert(pending, e)
         end
         LrTasks.yield()
     end
 
+    -- 2. A file written moments ago could share its time with our write (whole-second times): let it age first.
+    local newest
+    for _, e in ipairs(pending) do
+        for _, s in ipairs(e.before) do
+            if type(s) == "number" and (newest == nil or s > newest) then newest = s end
+        end
+    end
+    if newest then
+        local wait = CatalogModule.SAVE_SETTLE_SECONDS - (nowSeconds() - newest)
+        if wait > 0 then
+            LrTasks.sleep(math.min(wait, CatalogModule.SAVE_SETTLE_SECONDS))
+            for _, e in ipairs(pending) do e.before = CatalogModule._fileStamps(e.targets) end
+        end
+    end
+    pending = keepReadable(pending)
+
+    -- 3. Save, until the command's time runs out. A call that throws is an error; one that returns proves nothing
+    -- until the file changes.
+    local waiting = {}
+    for _, e in ipairs(pending) do
+        if nowSeconds() - start >= CatalogModule.SAVE_MAX_SECONDS then
+            e.status, e.error = "skipped", "Not saved: the command's " .. CatalogModule.SAVE_MAX_SECONDS
+                .. " s ran out first; save fewer photos at a time"
+        else
+            local ok, err = ErrorUtils.safeCall(function()
+                e.photo:saveMetadata()  -- live 2026-10-21: returns normally even when the write fails
+            end)
+            if ok then
+                table.insert(waiting, e)
+            else
+                e.status, e.error = "error", tostring(err)
+            end
+        end
+        LrTasks.yield()
+    end
+
+    -- 4. Wait for each file to change, while Lightroom keeps writing, within the same time limit.
+    local lastWrite = nowSeconds()
+    local timeRanOut = false
+    while #waiting > 0 do
+        local still = {}
+        for _, e in ipairs(waiting) do
+            local written = CatalogModule._writtenTarget(e.targets, e.before, CatalogModule._fileStamps(e.targets))
+            if written then
+                e.status, e.file = "written", written
+                lastWrite = nowSeconds()
+            else
+                table.insert(still, e)
+            end
+            LrTasks.yield()
+        end
+        waiting = still
+        if #waiting == 0 then break end
+        local now = nowSeconds()
+        if now - start >= CatalogModule.SAVE_MAX_SECONDS then
+            timeRanOut = true
+            break
+        end
+        if now - lastWrite >= CatalogModule.SAVE_IDLE_SECONDS then break end
+        LrTasks.sleep(CatalogModule.SAVE_POLL_SECONDS)
+    end
+    local when = timeRanOut and ("before the command's " .. CatalogModule.SAVE_MAX_SECONDS .. " s ran out")
+        or ("within " .. CatalogModule.SAVE_IDLE_SECONDS .. " s of the last write")
+    for _, e in ipairs(waiting) do
+        e.status = "not_written"
+        e.error = "Lightroom did not write the photo's metadata file " .. when .. " (read-only, in use by another "
+            .. "program, or offline?). Lightroom may show 'Some save metadata operations were not performed'."
+    end
+
+    local succeeded, failed, results = 0, 0, {}
+    for _, e in ipairs(entries) do
+        local ok = e.status == "written"
+        if ok then succeeded = succeeded + 1 else failed = failed + 1 end
+        table.insert(results, { photoId = e.photoId, success = ok, status = e.status, file = e.file, error = e.error })
+    end
     for _, pid in ipairs(notFound) do
         failed = failed + 1
-        table.insert(results, { photoId = pid, success = false, error = "Photo not found" })
+        table.insert(results, { photoId = pid, success = false, status = "photo_not_found", error = "Photo not found" })
+    end
+    for _, lf in ipairs(lookupFailed) do
+        failed = failed + 1
+        table.insert(results, { photoId = lf.photoId, success = false, status = "skipped",
+                                error = "Not saved: photo lookup failed: " .. lf.error })
     end
 
     callback(ErrorUtils.createSuccess({

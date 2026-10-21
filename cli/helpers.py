@@ -53,7 +53,8 @@ def coerce_scalar(value: str):
         return value
 
 
-def execute_command(ctx, command: str, params: dict, *, timeout: float | None = None, post_process=None):
+def execute_command(ctx, command: str, params: dict, *, timeout: float | None = None, post_process=None,
+                    fail_if=None):
     """共通コマンド実行ヘルパー。
 
     - エラーハンドリング（構造化エラー + 終了コード）
@@ -160,6 +161,9 @@ def execute_command(ctx, command: str, params: dict, *, timeout: float | None = 
             if post_process is not None:
                 data = post_process(data)
             click.echo(OutputFormatter.format(data, fmt, fields=fields))
+            if fail_if is not None and fail_if(data):   # printed in full, then exit 1 (2026-10-21)
+                ctx.exit(1)
+                return
         except click.exceptions.Exit:
             # ctx.exit() raises Exit, a RuntimeError subclass in Click 8 -- let it through. Caught below, it printed a
             # second error line, {"error": {"code": "ERROR", "message": "1"}}, after every real one (2026-10-06).
