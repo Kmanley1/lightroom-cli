@@ -19,6 +19,16 @@ All notable changes to this project will be documented in this file.
   before, a preview showed a call the real run refused.
 
 ### Fixed
+- **The e2e tests wrote into whatever catalog Lightroom had open** (2026-10-20). They skipped only when Lightroom
+  was unreachable, so a run with a real catalog open changed real photos; one run left the title "E2E Test Title"
+  and the snapshot `e2e_test_snap` in a photo's file. They now run only when Lightroom has the throwaway catalog
+  named by `LR_E2E_CATALOG` open. Otherwise, or when none is named, every e2e test skips with the reason. The
+  session fixture checks again when it starts (so `-p no:skipping` cannot turn the guard off) and before its
+  cleanup, which resets the selected photo (so a catalog opened mid-run gets no cleanup writes). The plugin has no
+  read command for the open catalog's path, so the check reuses `batch-add-keywords`' `catalogPath` refusal with
+  the pair (0, 0), which can never write; a path that cannot be open must come back `WRONG_CATALOG` first, so a
+  plugin that ignores `catalogPath` is refused. Not covered: a catalog switched between two tests mid-run (the
+  check is at collection, session start and cleanup). Tests only: CLI and plugin unchanged.
 - **Every error printed a second line** `{"error": {"code": "ERROR", "message": "1"}}` (2026-10-06): `ctx.exit()`
   raises click's `Exit`, a `RuntimeError` subclass in Click 8, and `execute_command`'s `except Exception` caught it
   and printed `str(Exit(1))`. `Exit` now passes through; exit codes were already right and are unchanged.
