@@ -188,7 +188,8 @@ def test_a_save_lightroom_does_not_perform_is_not_written(cat):
     assert r["success"] is False and r["status"] == "not_written" and "file" not in r
     assert "Some save metadata operations were not performed" in r["error"]
     assert _counts(resp) == (1, 0, 1)
-    assert 10 <= _ev(cat, "slept") < 11   # gave up after 10 s without a write
+    assert 30 <= _ev(cat, "slept") < 31   # gave up 30 s after the save, with nothing written
+    assert "within 30 s of the save" in r["error"]
 
 
 def test_one_silent_photo_does_not_spoil_the_others(cat):
@@ -344,6 +345,36 @@ def test_the_wait_goes_on_while_lightroom_keeps_writing(cat):
 def test_a_write_after_ten_quiet_seconds_is_too_late(cat):
     _add(cat, 100, JPG, delay=1)
     _add(cat, 101, JPG2, delay=12)
+    res = {r["photoId"]: r for r in _results(_call(cat, [100, 101]))}
+    assert {k: r["status"] for k, r in res.items()} == {"100": "written", "101": "not_written"}
+    assert "within 10 s of the last write" in res["101"]["error"]
+
+
+def test_lightroom_s_first_write_may_lag_past_ten_seconds(cat):
+    # mm save's bulk runs (2026-10-07..20): a chunk's first file landed 10-12 s after mm's last step before the save,
+    # once 21 s, then about 12 files a second. A 10 s window from the save gave up just as the writes began.
+    _add(cat, 100, JPG, delay=21)
+    _add(cat, 101, JPG2, delay=21.5)
+    assert {r["status"] for r in _results(_call(cat, [100, 101]))} == {"written"}
+
+
+def test_the_first_write_window_starts_when_the_saves_end(cat):
+    # refuter 2026-10-22: with free saves, "the saves end" and "the command starts" were the same instant
+    cat[0].execute("save_cost = 10")
+    _add(cat, 100, JPG, delay=35)     # saved during 0-10 s; the write lands 25 s after the saves end
+    (r,) = _results(_call(cat, [100]))
+    assert r["status"] == "written"
+
+
+def test_a_first_write_after_thirty_seconds_is_too_late(cat):
+    _add(cat, 100, JPG, delay=31)
+    (r,) = _results(_call(cat, [100]))
+    assert r["status"] == "not_written" and "within 30 s of the save" in r["error"]
+
+
+def test_once_writing_has_begun_ten_quiet_seconds_end_the_wait(cat):
+    _add(cat, 100, JPG, delay=12)
+    _add(cat, 101, JPG2, delay=23)
     st = {r["photoId"]: r["status"] for r in _results(_call(cat, [100, 101]))}
     assert st == {"100": "written", "101": "not_written"}
 
@@ -364,6 +395,7 @@ def test_the_sixty_seconds_count_the_saves_too(cat):
     _add(cat, 101, JPG2, "silent")
     res = _results(_call(cat, [100, 101]))
     assert [r["status"] for r in res] == ["not_written", "not_written"]
+    assert all("60 s ran out" in r["error"] for r in res)   # not "within 30 s of the save": the cap ended it
     assert _ev(cat, "CLOCK") - 1000 <= 60.5
 
 

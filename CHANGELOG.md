@@ -27,8 +27,11 @@ All notable changes to this project will be documented in this file.
   as saved only when the file Lightroom writes its metadata into has a different modification time afterwards:
   the file itself for JPEG, TIFF, PSD and DNG, the `name.xmp` sidecar for raw and HEIC, either for video, PNG and
   other formats. So a JPEG shot next to a raw cannot take the raw's sidecar for its own write. The plugin polls
-  while Lightroom keeps writing (a batch's last files land after the call returns), and gives up after 10 s without
-  a write or 60 s after the command started, saves included; photos not reached by then are not saved. A file
+  while Lightroom keeps writing (a batch's last files land after the call returns). It gives up when nothing at all
+  has been written 30 s after the saves (2026-10-22: in bulk runs Lightroom's first write landed 10-12 s after the
+  step before the save, once 21 s, so the first cut's 10 s could give up just as the writes began), after 10 s
+  without a write once writing has
+  begun, or 60 s after the command started, saves included; photos not reached by then are not saved. A file
   written moments before is first given 2 s to age, in case the disk keeps whole-second times. Each result now has
   a `status`: `written` (with the `file` that changed), `not_written`, `error`, or one of the statuses for a photo
   that was not saved: `file_missing`, `photo_not_found`, `virtual_copy` (Lightroom keeps a virtual copy's metadata

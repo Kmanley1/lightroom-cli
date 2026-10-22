@@ -1415,8 +1415,11 @@ end
 -- Lightroom fails to write: live in the Test catalog, on a read-only file it returned normally, the file was left
 -- untouched, and Lightroom showed the user "Some save metadata operations were not performed" -- while the bridge
 -- reported success. A real photo (2026-10-20) failed the same way with no message at all. Lightroom also finishes a
--- batch's last writes after the call returns (bulk run 2026-10-08: about a second later), so the check polls.
-CatalogModule.SAVE_IDLE_SECONDS = 10    -- give up once no pending file has been written for this long
+-- batch's last writes after the call returns (bulk run 2026-10-08: about a second later), so the check polls. Its
+-- first write can lag far more: in mm save's bulk runs (2026-10-07..20) a chunk's first file landed 10-12 s after
+-- the step before the save, once 21 s, then about 12 a second -- so the first write gets its own, longer wait.
+CatalogModule.SAVE_FIRST_WRITE_SECONDS = 30  -- give up if nothing at all has been written this long after the saves
+CatalogModule.SAVE_IDLE_SECONDS = 10    -- once writing has begun, give up when no file has been written for this long
 CatalogModule.SAVE_MAX_SECONDS = 60     -- the whole command, saves included, stops here (the CLI waits 120 s)
 CatalogModule.SAVE_SETTLE_SECONDS = 2   -- a file written this recently may share its time with our write
 CatalogModule.SAVE_POLL_SECONDS = 0.25
@@ -1582,6 +1585,7 @@ function CatalogModule.saveMetadata(params, callback)
 
     -- 4. Wait for each file to change, while Lightroom keeps writing, within the same time limit.
     local lastWrite = nowSeconds()
+    local anyWritten = false
     local timeRanOut = false
     while #waiting > 0 do
         local still = {}
@@ -1590,6 +1594,7 @@ function CatalogModule.saveMetadata(params, callback)
             if written then
                 e.status, e.file = "written", written
                 lastWrite = nowSeconds()
+                anyWritten = true
             else
                 table.insert(still, e)
             end
@@ -1602,11 +1607,18 @@ function CatalogModule.saveMetadata(params, callback)
             timeRanOut = true
             break
         end
-        if now - lastWrite >= CatalogModule.SAVE_IDLE_SECONDS then break end
+        local quiet = anyWritten and CatalogModule.SAVE_IDLE_SECONDS or CatalogModule.SAVE_FIRST_WRITE_SECONDS
+        if now - lastWrite >= quiet then break end
         LrTasks.sleep(CatalogModule.SAVE_POLL_SECONDS)
     end
-    local when = timeRanOut and ("before the command's " .. CatalogModule.SAVE_MAX_SECONDS .. " s ran out")
-        or ("within " .. CatalogModule.SAVE_IDLE_SECONDS .. " s of the last write")
+    local when
+    if timeRanOut then
+        when = "before the command's " .. CatalogModule.SAVE_MAX_SECONDS .. " s ran out"
+    elseif anyWritten then
+        when = "within " .. CatalogModule.SAVE_IDLE_SECONDS .. " s of the last write"
+    else
+        when = "within " .. CatalogModule.SAVE_FIRST_WRITE_SECONDS .. " s of the save"
+    end
     for _, e in ipairs(waiting) do
         e.status = "not_written"
         e.error = "Lightroom did not write the photo's metadata file " .. when .. " (read-only, in use by another "
